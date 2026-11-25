@@ -5,7 +5,7 @@ import { INTERVALLES, ACCORDS, sensDe, chiffrage, tirerIntervalle, tirerPortee, 
 import { chargerPiano, jouer } from './piano.js';
 import { PER, P_MIN, P_MAX, CLEFS, INK, DONE, RED, BLUE, SOFT, LINE, r2, noteInfo, metrics, systemSVG, miniPortee, porteeChant } from './portee.js';
 
-const VERSION = '2026-11-25.9';
+const VERSION = '2026-11-25.10';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
@@ -142,6 +142,7 @@ async function lancer(exo) {
     $('result').textContent = ''; delete $('result').dataset.alerte;
     $('debug').hidden = !DEBUG; $('debug').textContent = '';
     $('regler').hidden = S.kind === 'enreg'; $('aides').hidden = S.kind !== 'chant';
+    $('mic').hidden = S.input === 'midi'; $('mic').disabled = S.kind === 'enreg'; $('mic').setAttribute('aria-pressed', 'false'); $('mic').setAttribute('aria-label', 'Couper le micro');
     show('page'); render(); ligne(); levelLoop();
     if (navigator.wakeLock && !verrou) navigator.wakeLock.request('screen').then((l) => { verrou = l; }).catch(() => {});
     if (S && S.input !== 'midi') {
@@ -292,7 +293,7 @@ function ligne() {
 }
 
 function onCandidate(sess, c) {
-  if (sess !== S || S.over || S.pause || c.time < S.tStart) return;
+  if (sess !== S || S.over || S.pause || S.muet || c.time < S.tStart) return;
   c.delay = S.rec.clock - c.time;                        // son écoulé depuis l'ancre de la syllabe au moment où elle est reconnue
   S.heard.push(c); S.suivi.push(c);
   afterPush();
@@ -304,14 +305,14 @@ function afterPush() {
   // une syllabe nette restée sans note compte comme réponse après un silence
   const mine = S;
   S.commitT = setTimeout(() => {
-    if (S !== mine || S.over || S.pause) return;
+    if (S !== mine || S.over || S.pause || S.muet) return;
     if (S.suivi.commitPending(RED_CONF)) { render(); ligne(); }
   }, COMMIT_MS);
 }
 
 // Détection du modèle des syllabes seul, avant le filtre.
 function onRaw(sess, c) {
-  if (sess !== S || S.over || S.pause || c.time < S.tStart) return;
+  if (sess !== S || S.over || S.pause || S.muet || c.time < S.tStart) return;
   if (S.bypass) { onCandidate(sess, c); return; }        // filtre coupé : tout passe
   c.delay = S.rec.clock - c.time;
   S.raw.push(c); S.shadow.push(c);
@@ -344,17 +345,27 @@ function onMidiNote(note) {
   render(); ligne(); jalon(S);
 }
 
+// Le micro de la barre se remplit avec le niveau du son reçu. Le toucher coupe l'écoute : l'app n'entend plus rien, le temps
+// de chercher ses notes à part ; le retoucher la rétablit, et un exercice de chant reprend à sa première note.
 function levelLoop() {
   const mine = S;
   const tick = () => {
     if (S !== mine || !mine || mine.over) return;
-    if (mine.input === 'midi') { $('mic').style.opacity = '0'; return; }
-    const l = Math.min(1, (mine.level || 0) * 14);
-    $('mic').style.opacity = String(0.15 + 0.85 * l);
-    $('mic').style.transform = `scale(${0.6 + 0.6 * l})`;
+    const l = mine.muet ? 0 : Math.min(1, (mine.level || 0) * 14);
+    $('niveau').setAttribute('fill-opacity', String(Math.round(l * 100) / 100));
     requestAnimationFrame(tick);
   };
-  tick();
+  if (mine && mine.input !== 'midi') tick();
+}
+function micro() {
+  if (!S || S.over || S.pause || S.input === 'midi' || S.kind === 'enreg') return;
+  S.muet = !S.muet;
+  $('mic').setAttribute('aria-pressed', String(S.muet));
+  $('mic').setAttribute('aria-label', S.muet ? 'Rétablir le micro' : 'Couper le micro');
+  if (S.kind === 'notes') { if (!S.muet && S.rec) S.tStart = S.rec.time; return; }   // ce qui a été dit micro coupé ne compte pas
+  if (S.phase === 'vise') { S.j = 0; S.cents = []; S.fauxJ = -1; S.tNote = performance.now(); }
+  S.hold.reset(); S.track = []; S.part = 0;
+  renderChant();
 }
 
 function debugLine() {
@@ -535,7 +546,7 @@ function aide(mode) {
 function onPitch(sess, q) {
   if (sess !== S || S.over) return;
   S.level = q.rms;
-  if (S.pause) return;
+  if (S.pause || S.muet) return;
   const now = performance.now();
   if (S.phase === 'ecoute') {
     if (now < S.listenFrom) return;                      // le piano sonne : on n'écoute pas la voix
@@ -806,6 +817,7 @@ document.querySelector('h1').addEventListener('click', () => {
 });
 $('quit').addEventListener('click', quitter);
 $('regler').addEventListener('click', ouvrirReglages);
+$('mic').addEventListener('click', micro);
 $('aides').addEventListener('click', (e) => { const b = e.target.closest('button[data-h]'); if (b) aide(b.dataset.h); });
 $('fermer').addEventListener('click', fermerReglages);
 $('reglages').addEventListener('click', (e) => { const b = e.target.closest('button[data-a]'); if (b && !b.disabled) reglage(b); });

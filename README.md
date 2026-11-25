@@ -75,6 +75,9 @@ la note où l'on a buté reste rouge pendant ce temps. Rester sur la note préc�
 « Plaqué » et « Arpégé », en bas, font entendre toutes les notes ensemble ou l'une après l'autre ; on reprend ensuite à la première.
 La courbe de la voix se masque dans les réglages.
 
+Le micro de la barre, touché, coupe l'écoute (dans la lecture de notes aussi) : l'app ne tient plus compte de rien, le temps de chercher
+ses notes à part. Retouché, il la rétablit et l'exercice de chant reprend à sa première note. Le micro du navigateur, lui, reste ouvert.
+
 - Intervalles : le nom de l'intervalle et son sens sont écrits, sans portée. Les onze intervalles, de la seconde mineure à la
   septième majeure, se cochent un par un, ainsi que montant et descendant. Par défaut on chante d'abord la note de départ.
 - Portée : deux notes écrites en clé de sol, à chanter l'une après l'autre ; la première sonne. Mêmes choix d'intervalles.

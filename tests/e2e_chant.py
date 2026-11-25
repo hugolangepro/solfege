@@ -117,6 +117,18 @@ async def main():
             print('   Lecture · Notes : rangs', rangs, '|', e4, '| erreurs :', errs)
             await b.close()
 
+            # 6. Micro coupé : une fausse note tenue pendant ce temps ne compte pas ; micro rétabli, l'accord se chante normalement.
+            w = wav('chant_muet.wav', [(2.0, 1.4, 50), (4.6, 1.4, 48), (6.1, 1.4, 52), (7.6, 1.4, 55)], 11)
+            b, pg, errs = await page(p, base, w, '&ac=maj@0')
+            await pg.click('#liste button[data-exo="accords"]'); await pg.wait_for_timeout(900)
+            await pg.click('#mic'); await pg.wait_for_timeout(2800)
+            m1 = await pg.evaluate("() => { const s = window.__solfege.session; return [s.muet, s.phase, s.reprises, s.track.length, document.getElementById('mic').getAttribute('aria-pressed')]; }")
+            await shot(pg, 'micro_coupe.png')
+            await pg.click('#mic'); await pg.wait_for_timeout(5600)
+            m2 = await pg.evaluate(ETAT)
+            print('6. Micro coupé pendant une fausse note tenue 1,4 s : [coupé, phase, reprises, points de courbe, bouton] =', m1, '| micro rétabli puis accord chanté : trouvés', m2['n'], 'reprises', [r['reprises'] for r in m2['res']], '| erreurs :', errs)
+            await b.close()
+
             # 5. Lecture d'intervalles : une série enregistrée (cadence accélérée pour le test).
             b, pg, errs = await page(p, base, w, '&periode=60')
             await pg.click('#liste button[data-exo="noms"]'); await pg.wait_for_timeout(500); await shot(pg, 'noms_intro.png')

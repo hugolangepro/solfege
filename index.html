@@ -54,8 +54,11 @@ h1 { margin: 0; font-size: 44px; line-height: 1; font-weight: 400; font-style: i
 #page { gap: 0; }
 #bar, #sheet-bar { width: 100%; max-width: 760px; height: 44px; display: flex; align-items: center; justify-content: space-between; flex: none; }
 #quit, #fermer { width: 44px; height: 44px; margin-left: -12px; font-size: 30px; line-height: 1; color: var(--soft); }
-#regler { min-height: 44px; font-size: 16px; font-style: italic; color: var(--soft); }
-#mic { width: 12px; height: 12px; border-radius: 50%; background: var(--blue); opacity: 0.15; transform: scale(0.6); }
+#regler, #mic { width: 44px; height: 44px; display: grid; place-items: center; color: var(--soft); }
+#regler { margin-right: -10px; }
+#mic .barre { display: none; }
+#mic[aria-pressed="true"] .barre { display: inline; }
+#mic[aria-pressed="true"] { opacity: 0.55; }
 #systems { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 8px; align-items: center; flex: none; }
 #systems svg { display: block; overflow: visible; }
 #systems { margin: auto 0; }
@@ -105,8 +108,19 @@ h1 { margin: 0; font-size: 44px; line-height: 1; font-weight: 400; font-style: i
 <main id="page" hidden>
   <div id="bar">
     <button type="button" id="quit" aria-label="Quitter l'exercice">×</button>
-    <span id="mic" aria-hidden="true"></span>
-    <button type="button" id="regler">Réglages</button>
+    <button type="button" id="mic" aria-label="Couper le micro" aria-pressed="false">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+        <rect id="niveau" x="9" y="3" width="6" height="11" rx="3" fill="#1F4E8C" fill-opacity="0"/>
+        <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3"/>
+        <line class="barre" x1="4.5" y1="3.5" x2="19.5" y2="20.5"/>
+      </svg>
+    </button>
+    <button type="button" id="regler" aria-label="Réglages">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+        <circle cx="12" cy="12" r="6.6" stroke-width="1.5"/><circle cx="12" cy="12" r="2.4" stroke-width="1.5"/>
+        <path stroke-width="2.6" d="M19.4 12h2M17.23 17.23l1.42 1.42M12 19.4v2M6.77 17.23l-1.42 1.42M4.6 12h-2M6.77 6.77L5.35 5.35M12 4.6v-2M17.23 6.77l1.42-1.42"/>
+      </svg>
+    </button>
   </div>
   <div id="systems" aria-live="off"></div>
   <div id="foot">
