@@ -2,12 +2,15 @@
 import { loadModel, Recognizer, Resampler, Follower, SYLLABES } from './engine.js';
 import { GLYPHS } from './glyphs.js';
 
+const VERSION = '2026-11-25.2';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
 try { if (localStorage.getItem('solfege.debug') === '1') DEBUG = true; } catch (e) { /* stockage indisponible */ }
 const TEST_MIDI = params.get('input') === 'midi';      // tests sans clavier branché
 const N_SYS = 4, PER = 8, SS = 191;
+const MAX_SESSIONS = 2000;                             // pages gardées sur l'appareil
+const DIAG_MAX = 16000 * 300;                          // diagnostic : cinq minutes de son au plus
 const INK = '#1C1A17', DONE = 'rgba(28,26,23,0.36)', RED = '#B3261E', BLUE = '#1F4E8C', SOFT = '#6B6457', LINE = 'rgba(28,26,23,0.72)';
 const CLEFS = { sol: { glyph: 'gclef', off: 2, base: 4, nom: 'clé de sol' }, fa: { glyph: 'fclef', off: 4, base: 2, nom: 'clé de fa' } };
 const SEMIS = [0, 2, 4, 5, 7, 9, 11];
@@ -154,21 +157,29 @@ async function openMic(ctx, onSamples) {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
   });
-  if (ctx.state === 'suspended') await ctx.resume();
-  const src = ctx.createMediaStreamSource(stream);
-  const mute = ctx.createGain();
-  mute.gain.value = 0; mute.connect(ctx.destination);
-  let node;
-  if (ctx.audioWorklet && window.AudioWorkletNode) {
-    await ctx.audioWorklet.addModule('worklet.js');
-    node = new AudioWorkletNode(ctx, 'tap', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
-    node.port.onmessage = (e) => onSamples(e.data);
-  } else {
-    node = ctx.createScriptProcessor(1024, 1, 1);
-    node.onaudioprocess = (e) => onSamples(new Float32Array(e.inputBuffer.getChannelData(0)));
-  }
-  src.connect(node); node.connect(mute);
-  return { stop() { try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* déjà arrêté */ } try { ctx.close(); } catch (e) { /* déjà fermé */ } } };
+  const release = () => { try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* déjà arrêté */ } };
+  try {
+    // la reprise peut rester en attente d'un geste : on ne l'attend pas plus d'une seconde
+    if (ctx.state !== 'running') await Promise.race([ctx.resume().catch(() => {}), new Promise((r) => setTimeout(r, 1000))]);
+    const src = ctx.createMediaStreamSource(stream);
+    const mute = ctx.createGain();
+    mute.gain.value = 0; mute.connect(ctx.destination);
+    let node;
+    if (ctx.audioWorklet && window.AudioWorkletNode) {
+      await ctx.audioWorklet.addModule('worklet.js');
+      node = new AudioWorkletNode(ctx, 'tap', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
+      node.port.onmessage = (e) => onSamples(e.data);
+    } else {
+      node = ctx.createScriptProcessor(1024, 1, 1);
+      node.onaudioprocess = (e) => onSamples(new Float32Array(e.inputBuffer.getChannelData(0)));
+    }
+    src.connect(node); node.connect(mute);
+    const track = stream.getAudioTracks()[0];
+    const st = track && track.getSettings ? track.getSettings() : {};
+    const info = { nom: track ? track.label : '' };
+    for (const k of ['sampleRate', 'channelCount', 'echoCancellation', 'noiseSuppression', 'autoGainControl']) info[k] = st[k] ?? null;
+    return { info, stop() { release(); try { ctx.close(); } catch (e) { /* déjà fermé */ } } };
+  } catch (e) { release(); throw e; }
 }
 
 function show(view) {
@@ -192,16 +203,25 @@ async function start() {
       ctx.resume().catch(() => {});                       // dans le geste de l'utilisateur
       const model = await modelP;
       const rs = new Resampler(ctx.sampleRate), rec = new Recognizer(model);
-      S = { ...base, follower: new Follower(notes.map((n) => n.cls)), rec, heard: [], pcm: [], level: 0, rate: ctx.sampleRate, tStart: Infinity };
+      S = { ...base, follower: new Follower(notes.map((n) => n.cls)), rec, ctx, model, heard: [], pcm: [], pcmN: 0, level: 0, rate: ctx.sampleRate, tStart: Infinity };
       const mine = S;
       rec.onLevel = (rms) => { mine.level = rms; };
       rec.onCandidate = (c) => onCandidate(mine, c);
-      S.audio = await openMic(ctx, (x) => {
+      const audio = await openMic(ctx, (x) => {
         if (mine.over) return;
-        const y = rs.process(x);
-        if (DEBUG && mine.pcm.length < 6000) mine.pcm.push(Int16Array.from(y, (q) => Math.max(-32768, Math.min(32767, Math.round(q * 32768)))));
+        if (!mine.got) { mine.got = true; if (S === mine && $('result').dataset.alerte) { $('result').textContent = ''; delete $('result').dataset.alerte; } }
+        let y = rs.process(x);
+        if (DEBUG && mine.pcmN < DIAG_MAX) {
+          // en diagnostic, le moteur écoute exactement les échantillons gardés pour le fichier : le rejeu hors de l'app donne le même résultat
+          const q = Int16Array.from(y, (v) => Math.max(-32768, Math.min(32767, Math.round(v * 32768))));
+          mine.pcm.push(q); mine.pcmN += q.length;
+          y = Float32Array.from(q, (v) => v / 32768);
+        }
         rec.push(y);
       });
+      // séance quittée ou relancée pendant l'ouverture du micro : on le referme et on s'arrête là
+      if (S !== mine || mine.over) { audio.stop(); $('go').disabled = false; return; }
+      S.audio = audio;
       S.tStart = rec.time;                                 // les syllabes dites avant l'affichage ne comptent pas
     }
   } catch (e) {
@@ -209,13 +229,21 @@ async function start() {
     if (ctx) { try { ctx.close(); } catch (err) { /* déjà fermé */ } }
     say(e && e.name === 'NotAllowedError'
       ? 'Micro refusé. Autorise le micro pour ce site dans les réglages du navigateur, puis recommence.'
-      : 'Impossible d’ouvrir le micro : ' + (e && e.message ? e.message : e));
+      : 'Démarrage impossible : ' + (e && e.message ? e.message : e));
     return;
   }
-  $('result').textContent = ''; $('after').hidden = true; $('share').hidden = true;
+  $('result').textContent = ''; delete $('result').dataset.alerte; $('after').hidden = true; $('share').hidden = true;
   $('debug').hidden = !DEBUG; $('debug').textContent = '';
   show('page'); render(); levelLoop();
   if (navigator.wakeLock) navigator.wakeLock.request('screen').then((l) => { if (S) S.lock = l; }).catch(() => {});
+  if (input === 'voix') {
+    // aucun son reçu après trois secondes : le contexte audio attend un geste, une touche sur la page le relance
+    const mine = S;
+    setTimeout(() => {
+      if (S !== mine || mine.over || mine.got) return;
+      $('result').textContent = 'Le micro ne répond pas. Touche la page.'; $('result').dataset.alerte = '1';
+    }, 3000);
+  }
   $('go').disabled = false;
 }
 
@@ -257,7 +285,7 @@ function levelLoop() {
 function debugLine() {
   if (!DEBUG || !S || S.input !== 'voix') return;
   const last = S.heard.slice(-10).map((c) => `${SYLLABES[c.cls]} ${c.conf.toFixed(2)}`).join(', ');
-  $('debug').textContent = `${S.rate} Hz · niveau ${S.level.toFixed(3)} · entendu : ${last}`;
+  $('debug').textContent = `v${VERSION} · ${S.rate} Hz · niveau ${S.level.toFixed(3)} · entendu : ${last}`;
 }
 
 function finish() {
@@ -271,7 +299,10 @@ function finish() {
   const answered = v.filter((q) => q && q.time !== undefined);
   if (!answered.length) { S = null; show('home'); return; }
   const t0 = S.input === 'midi' ? 0 : S.tStart;
-  const dur = Math.max(0.5, Math.max(...answered.map((q) => q.time)) - t0);
+  // Durée de lecture : l'intervalle moyen entre la première et la dernière réponse, compté une fois par note lue.
+  // Le temps de réaction avant la première note n'entre pas dans la cadence.
+  const iA = v.findIndex((q) => q && q.time !== undefined), iB = v.findLastIndex((q) => q && q.time !== undefined);
+  const dur = iB > iA ? Math.max(0.5, (v[iB].time - v[iA].time) * (iB - iA + 1) / (iB - iA)) : Math.max(0.5, v[iB].time - t0);
   const lues = v.filter(Boolean).length, manque = lues - ok - faux;
   const rate = Math.round(60 * ok / dur), acc = ok + faux ? Math.round(100 * ok / (ok + faux)) : 0;
   let html = `${rate} notes justes par minute · ${acc} %`;
@@ -280,40 +311,59 @@ function finish() {
   $('after').hidden = false;
   render();
   $('share').hidden = !(DEBUG && S.input === 'voix');
-  saveSession({ at: S.at, mode: S.mode, input: S.input, n: S.N, ok, faux, manque, dur: Math.round(dur * 10) / 10, rate, acc,
-    notes: S.notes.map((n, i) => ({ c: n.clef, p: n.p, v: v[i] ? v[i].v : null, h: v[i] ? (v[i].cls ?? v[i].midi ?? null) : null, t: v[i] && v[i].time !== undefined ? Math.round((v[i].time - t0) * 1000) : null })) });
+  // Une note = [clé (0 sol, 1 fa), position sur la portée, verdict (1 juste, 0 faux, -1 non entendue, null non lue),
+  //             réponse (syllabe 0 à 6 à la voix, numéro MIDI au clavier), instant en ms depuis le début de la page]
+  const CODE = { ok: 1, faux: 0, manque: -1 };
+  saveSession({ id: S.at + '-' + Math.random().toString(36).slice(2, 8), fmt: 2, app: VERSION, at: S.at, mode: S.mode, input: S.input,
+    n: S.N, ok, faux, manque, dur: Math.round(dur * 10) / 10, rate, acc,
+    notes: S.notes.map((n, i) => {
+      const q = v[i];
+      return [n.clef === 'fa' ? 1 : 0, n.p, q ? CODE[q.v] : null, q ? (q.cls ?? q.midi ?? null) : null, q && q.time !== undefined ? Math.round((q.time - t0) * 1000) : null];
+    }) });
 }
 
 function saveSession(rec) {
   try {
-    const all = JSON.parse(localStorage.getItem('solfege.sessions') || '[]');
+    let all = JSON.parse(localStorage.getItem('solfege.sessions') || '[]');
     all.push(rec);
-    localStorage.setItem('solfege.sessions', JSON.stringify(all.slice(-400)));
+    all = all.slice(-MAX_SESSIONS);
+    try { localStorage.setItem('solfege.sessions', JSON.stringify(all)); }
+    catch (e) { localStorage.setItem('solfege.sessions', JSON.stringify(all.slice(Math.ceil(all.length / 5)))); }   // place manquante : on cède le cinquième le plus ancien
   } catch (e) { /* stockage indisponible : la séance n'est pas conservée */ }
 }
 
-// Mode diagnostic (?debug) : partage du son de la séance tel que l'app l'a reçu, pour ajuster le modèle.
-function wavBlob(chunks) {
-  const n = chunks.reduce((a, c) => a + c.length, 0), b = new DataView(new ArrayBuffer(44 + 2 * n));
-  const w = (o, s) => { for (let i = 0; i < s.length; i++) b.setUint8(o + i, s.charCodeAt(i)); };
-  w(0, 'RIFF'); b.setUint32(4, 36 + 2 * n, true); w(8, 'WAVEfmt '); b.setUint32(16, 16, true); b.setUint16(20, 1, true); b.setUint16(22, 1, true);
+// Mode diagnostic : un seul fichier à partager. C'est le son de la page tel que l'app l'a reçu (WAV, 16 kHz, mono),
+// suivi d'un bloc « sLFG » qui porte le compte rendu en JSON : notes attendues, syllabes entendues, verdicts, réglages du micro.
+function diagFile() {
+  if (!S || !S.pcm) return null;
+  const meta = {
+    app: VERSION, modele: S.model ? { version: S.model.version, trained: S.model.trained } : null, at: S.at, ua: navigator.userAgent,
+    installee: (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true,
+    ecran: [window.innerWidth, window.innerHeight, window.devicePixelRatio], rate: S.rate, micro: S.audio ? S.audio.info : null,
+    tStart: S.tStart, tronque: S.pcmN >= DIAG_MAX, mode: S.mode,
+    attendu: S.notes.map((n) => SYLLABES[n.cls]),
+    entendu: S.heard.map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100]),
+    verdicts: verdicts().map((q) => (q ? q.v : null)),
+  };
+  const json = new TextEncoder().encode(JSON.stringify(meta));
+  const n = S.pcm.reduce((a, c) => a + c.length, 0), pad = json.length % 2;
+  const buf = new ArrayBuffer(44 + 2 * n + 8 + json.length + pad), b = new DataView(buf);
+  const w = (o, t) => { for (let i = 0; i < t.length; i++) b.setUint8(o + i, t.charCodeAt(i)); };
+  w(0, 'RIFF'); b.setUint32(4, buf.byteLength - 8, true); w(8, 'WAVEfmt '); b.setUint32(16, 16, true); b.setUint16(20, 1, true); b.setUint16(22, 1, true);
   b.setUint32(24, 16000, true); b.setUint32(28, 32000, true); b.setUint16(32, 2, true); b.setUint16(34, 16, true); w(36, 'data'); b.setUint32(40, 2 * n, true);
   let o = 44;
-  for (const c of chunks) for (let i = 0; i < c.length; i++) { b.setInt16(o, c[i], true); o += 2; }
-  return new Blob([b], { type: 'audio/wav' });
+  for (const c of S.pcm) for (let i = 0; i < c.length; i++) { b.setInt16(o, c[i], true); o += 2; }
+  w(o, 'sLFG'); b.setUint32(o + 4, json.length, true); new Uint8Array(buf, o + 8, json.length).set(json);
+  return new File([buf], `solfege-${S.at.replace(/[:.]/g, '-')}.wav`, { type: 'audio/wav' });
 }
 async function shareAudio() {
-  if (!S || !S.pcm) return;
-  const stamp = S.at.replace(/[:.]/g, '-');
-  const meta = { at: S.at, rate: S.rate, tStart: S.tStart, attendu: S.notes.map((n) => SYLLABES[n.cls]), entendu: S.heard.map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100]), verdicts: verdicts().map((q) => (q ? q.v : null)) };
-  const files = [new File([wavBlob(S.pcm)], `solfege-${stamp}.wav`, { type: 'audio/wav' }), new File([JSON.stringify(meta)], `solfege-${stamp}.json`, { type: 'application/json' })];
+  const f = diagFile();
+  if (!f) return;
   try {
-    if (navigator.canShare && navigator.canShare({ files })) { await navigator.share({ files }); return; }
+    if (navigator.canShare && navigator.canShare({ files: [f] })) { await navigator.share({ files: [f] }); return; }
   } catch (e) { if (e && e.name === 'AbortError') return; }
-  for (const f of files) {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(f); a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
-  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(f); a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
 }
 
 // ---------- clavier MIDI ----------
@@ -364,7 +414,8 @@ $('quit').addEventListener('click', () => { if (S && !S.over) finish(); else { S
 $('again').addEventListener('click', start);
 $('done').addEventListener('click', () => { S = null; show('home'); });
 $('share').addEventListener('click', shareAudio);
+$('page').addEventListener('click', () => { if (S && !S.over && S.ctx && S.ctx.state !== 'running') S.ctx.resume().catch(() => {}); });
 window.addEventListener('resize', render);
 document.addEventListener('visibilitychange', () => { if (document.hidden && S && !S.over && S.input === 'voix') finish(); });
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-window.__solfege = { get session() { return S; }, verdicts, onMidiNote };
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
+window.__solfege = { VERSION, get session() { return S; }, verdicts, onMidiNote, diagFile };
