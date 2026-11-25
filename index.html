@@ -39,7 +39,7 @@ main {
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 button:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
 
-#home { justify-content: center; gap: 36px; }
+#home { justify-content: center; gap: 30px; }
 h1 { margin: 0; font-size: 44px; line-height: 1; font-weight: 400; font-style: italic; }
 .choice { display: flex; gap: 22px; flex-wrap: wrap; justify-content: center; }
 .choice button { min-height: 44px; padding: 0 2px; color: var(--soft); border-bottom: 2px solid transparent; }
@@ -53,7 +53,8 @@ h1 { margin: 0; font-size: 44px; line-height: 1; font-weight: 400; font-style: i
 #quit { width: 44px; height: 44px; margin-left: -12px; font-size: 30px; line-height: 1; color: var(--soft); }
 #mic { width: 12px; height: 12px; border-radius: 50%; background: var(--blue); opacity: 0.15; transform: scale(0.6); }
 #systems { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 8px; align-items: center; flex: none; }
-#systems svg { display: block; overflow: visible; }   /* une annotation en bout de portée déborde dans la marge au lieu d'être coupée */
+#systems svg { display: block; overflow: visible; }
+#systems.chant { margin: auto 0; cursor: pointer; }   /* une annotation en bout de portée déborde dans la marge au lieu d'être coupée */
 #foot { width: 100%; max-width: 760px; margin-top: auto; padding-top: 12px; display: flex; flex-direction: column; align-items: center; gap: 12px; min-height: 104px; }
 #result { margin: 0; text-align: center; font-size: 20px; min-height: 1.4em; }
 #result small { display: block; font-size: 15px; font-style: italic; color: var(--soft); }
@@ -66,6 +67,10 @@ h1 { margin: 0; font-size: 44px; line-height: 1; font-weight: 400; font-style: i
 <body>
 <main id="home">
   <h1>Solfège</h1>
+  <div class="choice" id="exo" role="radiogroup" aria-label="Exercice">
+    <button type="button" role="radio" aria-checked="true" data-v="lecture">Lecture</button>
+    <button type="button" role="radio" aria-checked="false" data-v="chant">Chant</button>
+  </div>
   <div class="choice" id="clef" role="radiogroup" aria-label="Clé">
     <button type="button" role="radio" aria-checked="true" data-v="sol">Clé de sol</button>
     <button type="button" role="radio" aria-checked="false" data-v="fa">Clé de fa</button>
@@ -74,6 +79,11 @@ h1 { margin: 0; font-size: 44px; line-height: 1; font-weight: 400; font-style: i
   <div class="choice" id="input" role="radiogroup" aria-label="Façon de répondre" hidden>
     <button type="button" role="radio" aria-checked="true" data-v="voix">À la voix</button>
     <button type="button" role="radio" aria-checked="false" data-v="midi">Au clavier</button>
+  </div>
+  <div class="choice" id="niveau" role="radiogroup" aria-label="Niveau" hidden>
+    <button type="button" role="radio" aria-checked="true" data-v="0">Niveau 1</button>
+    <button type="button" role="radio" aria-checked="false" data-v="1">Niveau 2</button>
+    <button type="button" role="radio" aria-checked="false" data-v="2">Niveau 3</button>
   </div>
   <button type="button" class="primary" id="go">Commencer</button>
   <p id="msg" role="status"></p>

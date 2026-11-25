@@ -1,8 +1,10 @@
 // Solfège : lecture de notes, réponse à la voix ou au clavier MIDI. Interface minimale.
 import { loadModel, Recognizer, Resampler, Follower, SYLLABES } from './engine.js';
 import { GLYPHS } from './glyphs.js';
+import { Pitch } from './pitch.js';
+import { buildIntervals, midiOf, nomIntervalle, Hold, NIVEAUX } from './chant.js';
 
-const VERSION = '2026-11-25.5';
+const VERSION = '2026-11-25.6';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
@@ -11,6 +13,9 @@ const TEST_MIDI = params.get('input') === 'midi';      // tests sans clavier bra
 const N_SYS = 4, N_SYS_PIANO = 3, PER = 8, SS = 191;
 const RED_CONF = 0.9;                                  // une syllabe au moins aussi nette colore la note en rouge sans attendre la suivante
 const END_MS = 500, COMMIT_MS = 2500, COMMIT_LAST_MS = 1200;
+// chant : nombre d'intervalles, durée de la note de référence, silence gardé après elle, pause avant l'intervalle suivant, courbe affichée
+const CHANT_N = 10, REF_MS = 1000, REF_TAIL_MS = 250, NEXT_MS = 700, TRACE_S = 3;
+const TOL = +params.get('tol') || 50, TENUE = +params.get('tenue') || 300;     // bande en cents, tenue en ms
 const MAX_SESSIONS = 2000;                             // pages gardées sur l'appareil
 const DIAG_MAX = 16000 * 300;                          // diagnostic : cinq minutes de son au plus
 const INK = '#1C1A17', DONE = 'rgba(28,26,23,0.36)', RED = '#B3261E', BLUE = '#1F4E8C', SOFT = '#6B6457', LINE = 'rgba(28,26,23,0.72)';
@@ -127,7 +132,7 @@ let modelP = null;                  // promesse du modèle vocal
 let gateOff = null;                 // clé du modèle pour lequel le filtre a été coupé, ou null
 try { gateOff = (JSON.parse(localStorage.getItem('solfege.gate') || 'null') || {}).model || null; } catch (e) { /* stockage indisponible */ }
 const gateKey = (m) => (m.gate ? `${m.version}:${m.gate.trained}:${m.gate.tau}` : '');
-const prefs = { clef: 'sol', input: 'voix' };
+const prefs = { clef: 'sol', input: 'voix', exo: 'lecture', niveau: '0' };
 try { Object.assign(prefs, JSON.parse(localStorage.getItem('solfege.prefs') || '{}')); } catch (e) { /* préférences absentes */ }
 
 function setChoice(groupId, value) {
@@ -146,11 +151,12 @@ function wireChoice(groupId, key, onChange) {
 const say = (t) => { $('msg').textContent = t; };
 
 function verdicts() {
-  if (!S) return [];
+  if (!S || S.kind === 'chant') return [];
   return S.input === 'midi' ? S.v : S.follower.verdicts();
 }
 function render() {
   if (!S) return;
+  if (S.kind === 'chant') { renderChant(); return; }
   const t0 = performance.now();
   const { W, s, gap, grand } = layout(), v = verdicts();
   // Note en cours, et syllabe nette qui ne lui correspond pas : la note passe au rouge tout de suite. La syllabe suivante
@@ -335,7 +341,7 @@ function onMidiNote(note) {
 }
 
 function levelLoop() {
-  if (!S || S.over || S.input !== 'voix') { $('mic').style.opacity = S && S.input === 'midi' ? '0' : '0.15'; return; }
+  if (!S || S.over || S.input === 'midi') { $('mic').style.opacity = S && S.input === 'midi' ? '0' : '0.15'; return; }
   const l = Math.min(1, S.level * 14);
   $('mic').style.opacity = String(0.15 + 0.85 * l);
   $('mic').style.transform = `scale(${0.6 + 0.6 * l})`;
@@ -360,6 +366,7 @@ function stats(a) {
 
 function finish() {
   if (!S || S.over) return;
+  if (S.kind === 'chant') { finishChant(); return; }
   S.over = true;
   clearTimeout(S.commitT); clearTimeout(S.endT);
   if (S.audio) S.audio.stop();
@@ -407,7 +414,15 @@ function saveSession(rec) {
 // suivi d'un bloc « sLFG » qui porte le compte rendu en JSON : notes attendues, syllabes entendues, verdicts, réglages du micro.
 function diagFile() {
   if (!S || !S.pcm) return null;
-  const meta = {
+  const meta = S.kind === 'chant' ? {
+    app: VERSION, exercice: 'chant', at: S.at, ua: navigator.userAgent,
+    installee: (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true,
+    rate: S.rate, micro: S.audio ? S.audio.info : null, tronque: S.pcmN >= DIAG_MAX, niveau: S.niveau + 1, tol: TOL, tenue: TENUE,
+    intervalles: S.items.map((q) => [q.ref, q.cible, nomIntervalle(q.ref, q.cible)]),
+    // par intervalle trouvé : référence, cible, temps pour trouver (ms), écart médian (cents), réécoutes, niveau et écart de la référence captée par le micro
+    resultats: S.results.map((r) => [r.ref, r.cible, r.ms, r.cents, r.replays, r.refRms, r.refCents]),
+    livraison: stats(S.lag),
+  } : {
     app: VERSION, modele: S.model ? { version: S.model.version, trained: S.model.trained } : null, at: S.at, ua: navigator.userAgent,
     installee: (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true,
     ecran: [window.innerWidth, window.innerHeight, window.devicePixelRatio], rate: S.rate, micro: S.audio ? S.audio.info : null,
@@ -442,6 +457,172 @@ async function shareAudio() {
   a.href = URL.createObjectURL(f); a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
 }
 
+// ---------- chant d'intervalles ----------
+// Trois temps, sans chronomètre. Écoute : la note de référence sonne (toucher la portée la rejoue). Vise : tu cherches
+// la seconde note, la courbe bleue montre ta voix sur la portée, rien n'est jugé. Tiens : la note compte après TENUE ms
+// dans la bande de ±TOL cents, à l'octave près.
+let WAVE = null;
+function playRef() {
+  const ctx = S.ctx, it = S.items[S.i];
+  if (!WAVE) WAVE = ctx.createPeriodicWave(new Float32Array([0, 0, 0, 0, 0, 0, 0]), new Float32Array([0, 1, 0.45, 0.25, 0.12, 0.06, 0.03]));
+  const t0 = ctx.currentTime + 0.03, osc = ctx.createOscillator(), g = ctx.createGain(), d = REF_MS / 1000;
+  osc.setPeriodicWave(WAVE); osc.frequency.value = 440 * 2 ** ((midiOf(it.ref) - 69) / 12);
+  g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(0.3, t0 + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.12, t0 + d * 0.8); g.gain.linearRampToValueAtTime(0, t0 + d);
+  osc.connect(g); g.connect(ctx.destination); osc.start(t0); osc.stop(t0 + d + 0.05);
+  S.phase = 'ecoute'; S.listenFrom = performance.now() + 30 + REF_MS + REF_TAIL_MS;
+  S.refRms = 0; S.refC = []; S.hold.reset();
+  renderChant();
+}
+
+async function startChant() {
+  say('');
+  $('go').disabled = true;
+  const niveau = +prefs.niveau || 0;
+  const forced = params.get('items');
+  const items = forced ? forced.split(',').map((q) => { const [a, b] = q.split(':').map(Number); return { ref: a, cible: b }; }) : buildIntervals(niveau, CHANT_N);
+  let ctx = null;
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    ctx = new AC({ latencyHint: 'interactive' });
+    ctx.resume().catch(() => {});                         // dans le geste de l'utilisateur
+    // iPhone : micro et haut-parleur ensemble, sans traitement de la voix
+    try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch (e) { /* réglage absent */ }
+    const rs = new Resampler(ctx.sampleRate), pitch = new Pitch({ win: 1024 });
+    S = { kind: 'chant', input: 'chant', mode: 'chant', niveau, items, i: 0, N: items.length, over: false, at: new Date().toISOString(), ctx, pitch,
+      hold: new Hold({ tol: TOL, holdMs: TENUE }), track: [], results: [], replays: 0, phase: 'ecoute', level: 0, rate: ctx.sampleRate,
+      pcm: [], pcmN: 0, lag: DEBUG ? [] : null };
+    const mine = S;
+    pitch.onPitch = (q) => onPitch(mine, q);
+    const audio = await openMic(ctx, (x, t) => {
+      if (mine.over) return;
+      mine.got = true;
+      if (mine.lag && t !== undefined && mine.lag.length < 60000) mine.lag.push(Math.max(0, ctx.currentTime - t));
+      const y = rs.process(x);
+      if (DEBUG && mine.pcmN < DIAG_MAX) { mine.pcm.push(Int16Array.from(y, (v) => Math.max(-32768, Math.min(32767, Math.round(v * 32768))))); mine.pcmN += y.length; }
+      pitch.push(y);
+    });
+    if (S !== mine || mine.over) { audio.stop(); $('go').disabled = false; return; }
+    S.audio = audio;
+  } catch (e) {
+    S = null; $('go').disabled = false;
+    if (ctx) { try { ctx.close(); } catch (err) { /* déjà fermé */ } }
+    say(e && e.name === 'NotAllowedError'
+      ? 'Micro refusé. Autorise le micro pour ce site dans les réglages du navigateur, puis recommence.'
+      : 'Démarrage impossible : ' + (e && e.message ? e.message : e));
+    return;
+  }
+  $('result').textContent = ''; delete $('result').dataset.alerte; $('after').hidden = true; $('share').hidden = true;
+  $('debug').hidden = !DEBUG; $('debug').textContent = '';
+  $('systems').classList.add('chant');
+  show('page'); playRef(); levelLoop(); chantLoop();
+  if (navigator.wakeLock) navigator.wakeLock.request('screen').then((l) => { if (S) S.lock = l; }).catch(() => {});
+  $('go').disabled = false;
+}
+
+// Une mesure de hauteur toutes les 10 ms.
+function onPitch(sess, q) {
+  if (sess !== S || S.over) return;
+  S.level = q.rms;
+  const it = S.items[S.i], now = performance.now();
+  if (S.phase === 'ecoute') {
+    // la référence sonne : on n'écoute pas la voix, mais on note ce que le micro capte d'elle (sort-elle bien du haut-parleur ?)
+    if (q.rms > S.refRms) S.refRms = q.rms;
+    if (q.clarity >= 0.8 && q.f0 > 0) S.refC.push(1200 * Math.log2(q.f0 / 440) - 100 * (midiOf(it.ref) - 69));
+    if (now < S.listenFrom) return;
+    S.phase = 'vise'; S.hold.reset();
+    if (S.tVise === undefined) S.tVise = now;
+    renderChant();
+  }
+  if (S.phase !== 'vise') return;
+  const midi = midiOf(it.cible), r = S.hold.push(q, midi);
+  S.track.push({ t: q.time, c: r.voiced ? r.cents : null });
+  if (S.track.length > 100 * (TRACE_S + 1)) S.track.splice(0, 100);
+  if (DEBUG) $('debug').textContent = `v${VERSION} · ${S.rate} Hz · ${q.f0 ? q.f0.toFixed(1) + ' Hz' : 'pas de note'} · netteté ${q.clarity.toFixed(2)} · écart ${r.cents === null ? '?' : Math.round(r.cents) + ' cents'} · bande ±${TOL}, tenue ${TENUE} ms · référence captée ${S.refRms.toFixed(3)}`;
+  if (!r.done) return;
+  const c = S.refC.slice().sort((a, b) => a - b), mc = c.length ? c[c.length >> 1] : null;
+  S.results.push({ ref: it.ref, cible: it.cible, ms: Math.round(now - S.tVise), cents: Math.round(r.median), replays: S.replays,
+    refRms: Math.round(S.refRms * 1000) / 1000, refCents: mc === null ? null : Math.round(mc - 1200 * Math.round(mc / 1200)) });
+  S.phase = 'tenu'; renderChant();
+  setTimeout(() => {
+    if (S !== sess || S.over) return;
+    S.i += 1; S.replays = 0; S.tVise = undefined; S.track = [];
+    if (S.i >= S.N) finishChant(); else playRef();
+  }, NEXT_MS);
+}
+
+// La portée porte les deux notes de l'intervalle. Dessous, la courbe de la voix : la ligne du milieu est la note à chanter,
+// la bande bleue ce qu'il faut tenir (±TOL cents), les traits fins marquent les demi-tons au-dessus et au-dessous.
+const SPAN = 350;                                          // la courbe montre ±350 cents autour de la cible
+function chantLayout() {
+  const cs = getComputedStyle($('page'));
+  const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  const W = Math.floor(Math.min(window.innerWidth - padX, 760)), s = Math.min(Math.floor(W / 22 * 2) / 2, 20);
+  const yb = Math.round(3.2 * s) + 4 * s, y0 = yb + Math.round(4.2 * s), hc = Math.round(9 * s);
+  return { W, s, yb, y0, hc, H: y0 + hc + 4, x1: 6.2 * s, x2: 9.8 * s, xa: 0.4 * s, xb: W - 0.8 * s };
+}
+function renderChant() {
+  if (!S || S.kind !== 'chant') return;
+  const { W, s, yb, y0, hc, H, x1, x2, xa, xb } = chantLayout(), k = s / SS, lw = Math.max(0.9, s / 12);
+  const it = S.items[Math.min(S.i, S.N - 1)], y = (p) => yb - p * s / 2, yc = (c) => y0 + hc / 2 - c * (hc / 2) / SPAN;
+  let o = '';
+  for (let i = 0; i < 5; i++) o += `<line x1="0" y1="${r2(yb - i * s)}" x2="${W}" y2="${r2(yb - i * s)}" stroke="${LINE}" stroke-width="${r2(lw)}"/>`;
+  const g = GLYPHS.gclef;
+  o += `<path d="${g.d}" transform="translate(${r2(3 - g.left * k)} ${r2(yb)}) scale(${k} ${-k}) translate(0 12)" fill="${INK}"/>`;
+  const note = (x, p, col, id) => {
+    let q = '';
+    const led = [];
+    if (p <= -2) for (let v = -2; v >= p; v -= 2) led.push(v);
+    if (p >= 10) for (let v = 10; v <= p; v += 2) led.push(v);
+    for (const v of led) q += `<line x1="${r2(x - 1.02 * s)}" y1="${r2(y(v))}" x2="${r2(x + 1.02 * s)}" y2="${r2(y(v))}" stroke="${LINE}" stroke-width="${r2(lw * 1.3)}"/>`;
+    return q + `<path id="${id}" d="${GLYPHS.nhblack.d}" transform="translate(${r2(x - 155 * k)} ${r2(y(p) + 91 * k)}) scale(${k} ${-k})" fill="${col}"/>`;
+  };
+  o += note(x1, it.ref, S.phase === 'ecoute' ? BLUE : INK, 'ref');           // bleue pendant qu'elle sonne
+  o += note(x2, it.cible, S.phase === 'tenu' ? DONE : INK, 'cible');
+  // la courbe
+  o += `<rect x="${r2(xa)}" y="${r2(yc(TOL))}" width="${r2(xb - xa)}" height="${r2(yc(-TOL) - yc(TOL))}" fill="${BLUE}" opacity="0.16"/>`;
+  for (const c of [-300, -200, -100, 100, 200, 300]) o += `<line x1="${r2(xa)}" y1="${r2(yc(c))}" x2="${r2(xb)}" y2="${r2(yc(c))}" stroke="${LINE}" stroke-width="0.6" opacity="0.35"/>`;
+  o += `<line x1="${r2(xa)}" y1="${r2(yc(0))}" x2="${r2(xb)}" y2="${r2(yc(0))}" stroke="${BLUE}" stroke-width="1" opacity="0.6"/>`;
+  o += `<path id="trace" d="" fill="none" stroke="${BLUE}" stroke-width="${r2(Math.max(2.2, s / 6))}" stroke-linecap="round" stroke-linejoin="round"/>`;
+  o += `<circle id="voix" cx="${r2(xb)}" cy="-99" r="${r2(s * 0.36)}" fill="${BLUE}"/>`;
+  const label = `Intervalle ${S.i + 1} sur ${S.N} : ${nomIntervalle(it.ref, it.cible)}. Toucher pour réentendre la première note.`;
+  $('systems').style.gap = '0px';
+  $('systems').innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${label}">${o}</svg>`;
+}
+// Les TRACE_S dernières secondes de la voix, la plus récente à droite ; hors de l'échelle, la courbe longe le bord.
+function chantLoop() {
+  if (!S || S.over || S.kind !== 'chant') return;
+  const tr = $('trace'), dot = $('voix');
+  if (tr && S.track.length) {
+    const { y0, hc, xa, xb } = chantLayout(), tN = S.track[S.track.length - 1].t, px = (xb - xa) / TRACE_S;
+    let d = '', pen = false, last = null;
+    for (const q of S.track) {
+      const x = xb - (tN - q.t) * px;
+      if (q.c === null || x < xa) { pen = false; continue; }
+      const yy = y0 + hc / 2 - Math.max(-SPAN, Math.min(SPAN, q.c)) * (hc / 2) / SPAN;
+      d += `${pen ? 'L' : 'M'}${r2(x)} ${r2(yy)}`; pen = true; last = yy;
+    }
+    tr.setAttribute('d', d);
+    dot.setAttribute('cy', S.track[S.track.length - 1].c === null || last === null ? -99 : r2(last));
+  } else if (tr) { tr.setAttribute('d', ''); dot.setAttribute('cy', -99); }
+  requestAnimationFrame(chantLoop);
+}
+function finishChant() {
+  if (!S || S.over) return;
+  S.over = true;
+  if (S.audio) S.audio.stop();
+  if (S.lock) { try { S.lock.release(); } catch (e) { /* déjà libéré */ } }
+  const R = S.results;
+  if (!R.length) { S = null; $('systems').classList.remove('chant'); show('home'); return; }
+  const sec = R.reduce((a, r) => a + r.ms, 0) / R.length / 1000, cents = Math.round(R.reduce((a, r) => a + Math.abs(r.cents), 0) / R.length);
+  $('result').innerHTML = `${R.length} ${R.length > 1 ? 'intervalles' : 'intervalle'} · ${sec.toFixed(1).replace('.', ',')} s pour trouver la note<small>écart moyen : ${cents} cents</small>`;
+  $('after').hidden = false;
+  $('share').hidden = !DEBUG;
+  // Un intervalle = [position de la référence, position de la cible, temps pour trouver (ms), écart médian (cents), réécoutes]
+  saveSession({ id: S.at + '-' + Math.random().toString(36).slice(2, 8), fmt: 2, app: VERSION, at: S.at, mode: 'chant', input: 'chant', niveau: S.niveau + 1,
+    n: S.N, ok: R.length, tol: TOL, tenue: TENUE, items: R.map((r) => [r.ref, r.cible, r.ms, r.cents, r.replays]) });
+}
+
 // ---------- clavier MIDI ----------
 const midi = {
   access: null,
@@ -463,9 +644,17 @@ const midi = {
 // ---------- démarrage ----------
 modelP = fetch('model.json').then((r) => { if (!r.ok) throw new Error('modèle vocal introuvable'); return r.json(); }).then(loadModel);
 modelP.catch((e) => say('Chargement impossible : ' + e.message));
+const exo = () => (params.get('exo') || prefs.exo);
+function showHome() {
+  const chant = exo() === 'chant';
+  $('clef').hidden = chant; $('niveau').hidden = !chant;
+  $('input').hidden = chant || !navigator.requestMIDIAccess;
+  say(chant ? NIVEAUX[+prefs.niveau || 0].texte + ' La première note sonne, chante la seconde.' : '');
+}
+wireChoice('exo', 'exo', showHome);
+wireChoice('niveau', 'niveau', showHome);
 wireChoice('clef', 'clef');
 if (navigator.requestMIDIAccess) {
-  $('input').hidden = false;
   wireChoice('input', 'input', async (v) => {
     if (v !== 'midi') { say(''); return; }
     try { say((await midi.open()) ? '' : 'Aucun clavier MIDI détecté. Branche-le, puis choisis à nouveau « Au clavier ».'); }
@@ -475,7 +664,8 @@ if (navigator.requestMIDIAccess) {
 } else {
   prefs.input = 'voix';
 }
-$('go').addEventListener('click', start);
+showHome();
+$('go').addEventListener('click', () => (exo() === 'chant' ? startChant() : start()));
 // cinq touches rapides sur le titre : active ou coupe le mode diagnostic (son partageable, syllabes entendues)
 let taps = [];
 document.querySelector('h1').addEventListener('click', () => {
@@ -486,12 +676,15 @@ document.querySelector('h1').addEventListener('click', () => {
     say(DEBUG ? 'Mode diagnostic activé.' : 'Mode diagnostic coupé.');
   }
 });
-$('quit').addEventListener('click', () => { if (S && !S.over) finish(); else { S = null; show('home'); } });
-$('again').addEventListener('click', start);
-$('done').addEventListener('click', () => { S = null; show('home'); });
+const goHome = () => { S = null; $('systems').classList.remove('chant'); show('home'); };
+$('quit').addEventListener('click', () => { if (S && !S.over) finish(); else goHome(); });
+$('again').addEventListener('click', () => (S && S.kind === 'chant' ? startChant() : start()));
+$('done').addEventListener('click', goHome);
+// chant : toucher la portée rejoue la note de référence
+$('systems').addEventListener('click', () => { if (S && S.kind === 'chant' && !S.over && S.phase === 'vise') { S.replays += 1; playRef(); } });
 $('share').addEventListener('click', shareAudio);
 $('page').addEventListener('click', () => { if (S && !S.over && S.ctx && S.ctx.state !== 'running') S.ctx.resume().catch(() => {}); });
 window.addEventListener('resize', render);
-document.addEventListener('visibilitychange', () => { if (document.hidden && S && !S.over && S.input === 'voix') finish(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden && S && !S.over && S.input !== 'midi') finish(); });
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
 window.__solfege = { VERSION, get session() { return S; }, verdicts, onMidiNote, diagFile, get gateOff() { return gateOff; } };

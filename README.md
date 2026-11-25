@@ -1,6 +1,6 @@
 # Solfège
 
-App web personnelle de lecture de notes. La page affiche quatre portées en clé de sol ou en clé de fa, ou trois systèmes de piano (les deux clés ensemble) ; on répond à la voix (do, ré, mi, fa, sol, la, si) ou au clavier MIDI.
+App web personnelle de solfège. Lecture de notes : la page affiche quatre portées en clé de sol ou en clé de fa, ou trois systèmes de piano (les deux clés ensemble) ; on répond à la voix (do, ré, mi, fa, sol, la, si) ou au clavier MIDI. Chant d'intervalles : une note sonne, on chante la seconde, la hauteur de la voix se lit en direct.
 
 ## Utiliser
 
@@ -30,18 +30,35 @@ L'app revalide ses fichiers à chaque ouverture : la nouvelle version arrive au 
 - `index.html`, `app.js` : interface et déroulement d'une page.
 - `engine.js` : écoute. Rééchantillonnage à 16 kHz, log-mel, modèle vocal, détection des syllabes, alignement sur les notes attendues.
   Une syllabe est reconnue dès que le modèle la donne à 95 % deux pas de suite (40 ms), sans attendre le sommet ; les syllabes moins nettes passent par le sommet confirmé 160 ms plus tard.
+- `pitch.js` : hauteur de la voix en flux (méthode de McLeod après un passe-bas à 1 kHz), une mesure toutes les 10 ms.
+- `chant.js` : chant d'intervalles. Choix des intervalles par niveau, jugement de la tenue.
 - `worklet-2.js` : relais du micro (`worklet.js` reste servi pour une page ouverte avant la mise à jour).
 - `model.json` : modèle vocal entraîné sur la voix d'Hugo (séance de mesure du 25 novembre 2026). Sept syllabes et une classe de rejet.
   Depuis la version 3, il porte aussi un filtre « syllabe dite ou autre son » : un second petit réseau sur la même image de 300 ms, qui laisse intact le modèle des syllabes.
 - `sw.js`, `manifest.webmanifest`, `icons/` : installation et usage hors ligne.
 - `outils/` : scripts Python qui ont produit le modèle. Ils demandent l'enregistrement de la séance de mesure, qui n'est pas dans ce dépôt.
-- `tests/` : contrôles du moteur sous Node et de l'app dans Chrome (`python3 tests/e2e.py`, `python3 tests/e2e_midi.py`), servie sous `/solfege/` comme en ligne. Eux aussi demandent l'enregistrement.
+- `tests/` : contrôles du moteur sous Node (`node tests/pending.mjs`, `node tests/chant.mjs`) et de l'app dans Chrome (`python3 tests/e2e.py`, `python3 tests/e2e_midi.py`, `python3 tests/e2e_chant.py`), servie sous `/solfege/` comme en ligne. Ceux de la lecture à la voix demandent l'enregistrement ; celui du chant fabrique sa voix de synthèse.
 
 ## Affichage des réponses
 
 - Note validée : elle passe en gris. Note fausse : elle passe en rouge. Aucun texte sous les notes.
 - À la voix, une syllabe nette qui n'est pas la note attendue colore la note en rouge tout de suite. La syllabe suivante tranche : la bonne note la valide (correction), la note d'après la confirme fausse. Un silence de 2,5 s (1,2 s sur la dernière note) la confirme aussi.
 - Une note que le micro n'a pas entendue reste noire ; elle ne compte ni juste ni fausse.
+
+## Chant d'intervalles
+
+Trois temps, sans chronomètre. Écoute : la première note sonne (elle est bleue pendant ce temps) ; toucher la portée la rejoue.
+Vise : on cherche la seconde note ; sous la portée, la courbe bleue montre la voix, la ligne du milieu est la note à chanter,
+les traits fins sont les demi-tons. Tiens : la note compte après 300 ms dans la bande de ±50 cents, à l'octave près.
+Les 150 premières millisecondes d'une émission ne sont pas jugées, la médiane absorbe le vibrato, un glissando qui traverse
+la bande ne compte pas. Rien n'est compté faux.
+
+- Niveau 1 : secondes et tierces majeures, quintes, octaves, en montant. Niveau 2 : les mêmes et la quarte, dans les deux sens.
+  Niveau 3 : tous les intervalles entre notes naturelles. Dix intervalles par séance.
+- Une séance gardée : `mode: 'chant'`, niveau, bande et tenue, et par intervalle trouvé
+  `[position de la référence, position de la cible, temps pour trouver (ms), écart médian (cents), réécoutes]`.
+- Réglages d'essai par l'adresse : `?tol=25` (bande en cents), `?tenue=500` (ms).
+- Précision du suivi de hauteur sur sons de synthèse : moins de 0,2 cent de 73 à 880 Hz.
 
 ## Bruits
 
