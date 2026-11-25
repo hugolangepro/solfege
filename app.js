@@ -2,7 +2,7 @@
 import { loadModel, Recognizer, Resampler, Follower, SYLLABES } from './engine.js';
 import { GLYPHS } from './glyphs.js';
 
-const VERSION = '2026-11-25.2';
+const VERSION = '2026-11-25.3';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
@@ -144,7 +144,9 @@ function render() {
     const states = notes.map((n, i) => {
       const q = v[sys * PER + i];
       if (!q) return { kind: 'next', cur: sys * PER + i === cur };
-      const label = q.v === 'faux' ? (S.input === 'midi' ? MIDI_NOMS[q.midi % 12] : 'dit : ' + SYLLABES[q.cls]) : '';
+      // au clavier, la bonne note jouée dans une autre octave se dit telle quelle : son nom seul serait celui de la note attendue
+      const label = q.v !== 'faux' ? '' : S.input !== 'midi' ? 'dit : ' + SYLLABES[q.cls]
+        : (q.midi - notes[i].midi) % 12 === 0 ? 'à l’octave' : MIDI_NOMS[q.midi % 12];
       return { kind: q.v, label, cur: false };
     });
     html += systemSVG(notes, states, W, s);
