@@ -22,9 +22,8 @@ let s = 7; const rnd = () => { s = (s * 16807) % 2147483647; return s / 21474836
   check('les 22 intervalles orientés sortent sur la portée', vus.size, 22);
   console.log('    seconde note sur la portée : ' + JSON.stringify(alt) + ' (bémol, naturelle, dièse)');
   check('un seul intervalle choisi, descendant', [1, 2, 3].map(() => { const q = tirerIntervalle({ iv: [6], montant: false, descendant: true }, rnd); return q.st * q.sens; }).join(), '-6,-6,-6');
-  check('chiffrages en do', ACCORDS.map((a) => chiffrage(0, a.id)).join(' '), 'C Cm C+ C° Csus4 Cm7 Cmaj7 C7 Cm(maj7) C6');
-  check('chiffrages en do, signes', ACCORDS.map((a) => chiffrage(0, a.id, 'signes')).join(' '), 'C C– C+ C° Csus4 C–7 C∆7 C7 C–∆7 C6');
-  check('fondamentales altérées', [1, 6, 8, 10].map((q) => ['maj7', 'm7', '7'].map((id) => chiffrage(q, id)).join(' ')).join(' | '), 'D♭maj7 C♯m7 D♭7 | G♭maj7 F♯m7 F♯7 | A♭maj7 A♭m7 A♭7 | B♭maj7 B♭m7 B♭7');
+  check('chiffrages en do', ACCORDS.map((a) => chiffrage(0, a.id)).join(' '), 'C C– C+ C° Csus4 C–7 C∆7 C7 C–∆7 C6');
+  check('fondamentales altérées', [1, 6, 8, 10].map((q) => ['maj7', 'm7', '7'].map((id) => chiffrage(q, id)).join(' ')).join(' | '), 'D♭∆7 C♯–7 D♭7 | G♭∆7 F♯–7 F♯7 | A♭∆7 A♭–7 A♭7 | B♭∆7 B♭–7 B♭7');
   check('noms', [5, 6, 7, 10].map((st) => `${INTERVALLES[st].nom} ${sensDe(st, 1)}`).join(', '), 'quarte montante, triton montant, quinte montante, septième mineure montante');
 }
 {
@@ -86,4 +85,18 @@ const slide = judge([[0.5, 0], [0.5, hz(62)], [1.5, hz(64), { scoop: -200 }]], 6
 console.log('    ré puis glisse vers mi sans reprendre son souffle : ' + slide);
 ok = ok && slide !== 'jamais';
 check('bande réglée à ±25 cents, mi 30 cents trop bas', judge([[0.5, 0], [1.5, hz(64 - 0.3)]], 64, { tol: 25 }), 'jamais');
+// autre note tenue : signalée après 0,15 s d'attaque et 0,5 s de tenue, avec son écart ; ni un glissando ni une note juste ne le sont
+function fausse(segs, midi) {
+  const P = new Pitch({ win: 1024 }), H = new Hold(); let at = null, ec = null;
+  P.onPitch = (q) => { const r = H.push(q, midi); if (r.faux !== null && at === null) { at = q.time; ec = r.faux; } };
+  const x = voice(segs);
+  for (let i = 0; i < x.length; i += 256) P.push(x.subarray(i, Math.min(x.length, i + 256)));
+  return at === null ? 'jamais' : `${at.toFixed(2)} s, ${ec.toFixed(0)} cents`;
+}
+check('fa tenu au lieu de mi : fausse note signalée', fausse([[0.5, 0], [1.5, hz(65)]], 64), '1.12 s, 100 cents');
+check('si bémol tenu au lieu de mi (triton, au repli de l\'octave) : signalée', fausse([[0.5, 0], [1.5, hz(58)]], 64) !== 'jamais', true);
+check('mi juste : pas de fausse note', fausse([[0.5, 0], [1.5, hz(64)]], 64), 'jamais');
+check('mi 60 cents trop bas (ni validé ni faux : on peut corriger)', fausse([[0.5, 0], [1.5, hz(64 - 0.6)]], 64), 'jamais');
+check('glissando ré → fa dièse : pas de fausse note', fausse([[0.5, 0], [1.6, hz(62), { glide: 400 }]], 64), 'jamais');
+check('fausse note trop courte (0,5 s)', fausse([[0.5, 0], [0.5, hz(65)], [0.5, 0]], 64), 'jamais');
 process.exit(ok ? 0 : 1);

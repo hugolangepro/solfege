@@ -3,9 +3,9 @@ import { loadModel, Recognizer, Resampler, Suivi, SYLLABES } from './engine.js';
 import { Pitch } from './pitch.js';
 import { INTERVALLES, ACCORDS, sensDe, chiffrage, tirerIntervalle, tirerPortee, tirerAccord, midiOf, Hold } from './chant.js';
 import { chargerPiano, jouer } from './piano.js';
-import { PER, P_MIN, P_MAX, CLEFS, INK, DONE, BLUE, SOFT, LINE, r2, noteInfo, metrics, systemSVG, miniPortee, porteeChant } from './portee.js';
+import { PER, P_MIN, P_MAX, CLEFS, INK, DONE, RED, BLUE, SOFT, LINE, r2, noteInfo, metrics, systemSVG, miniPortee, porteeChant } from './portee.js';
 
-const VERSION = '2026-11-25.8';
+const VERSION = '2026-11-25.9';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
@@ -18,6 +18,8 @@ const TOURNE = 2;                                      // notes lues sur une por
 // chant : durée de la note de référence, silence gardé après elle, pause avant l'exercice suivant, courbe affichée
 const REF_MS = 1200, REF_TAIL_MS = 200, NEXT_MS = 700, TRACE_S = 3;
 const TOL = +params.get('tol') || 50;                  // bande en cents
+// pas à tâtons : après une note tenue, la suivante doit l'être dans la tenue + CHERCHE_MS, sinon on reprend à la première
+const CHERCHE_MS = 2000;
 const PROMPT_MS = 2500, SERIE = 4;                     // enregistrement : un nom toutes les 2,5 s, chaque nom quatre fois par série
 const MAX_SESSIONS = 2000;                             // séances gardées sur l'appareil
 const DIAG_MAX = 16000 * 300;                          // son gardé : cinq minutes au plus
@@ -25,17 +27,19 @@ const DIAG_MAX = 16000 * 300;                          // son gardé : cinq minu
 // ---------- préférences ----------
 const TOUS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 const prefs = {
-  exo: 'notes', tenue: 700,
+  exo: 'notes', tenue: 700, courbe: true,
   notes: { clef: 'sol', input: 'voix', sol: [-2, 10], fa: [-2, 10] },
   intervalles: { iv: TOUS.slice(), montant: true, descendant: true, depart: true },
   portee: { iv: TOUS.slice(), montant: true, descendant: true },
-  accords: { types: ACCORDS.map((a) => a.id), notation: 'lettres' },
+  accords: { types: ACCORDS.map((a) => a.id) },
 };
 try {
   const lu = JSON.parse(localStorage.getItem('solfege.prefs') || '{}') || {};
   if (typeof lu.clef === 'string') { prefs.notes.clef = lu.clef; if (lu.input) prefs.notes.input = lu.input; }   // préférences d'avant les réglages par exercice
   for (const k of ['notes', 'intervalles', 'portee', 'accords']) if (lu[k] && typeof lu[k] === 'object') Object.assign(prefs[k], lu[k]);
   if (typeof lu.tenue === 'number') prefs.tenue = lu.tenue;
+  if (typeof lu.courbe === 'boolean') prefs.courbe = lu.courbe;
+  delete prefs.accords.notation;
   if (['notes', 'noms', 'intervalles', 'portee', 'accords'].includes(lu.exo)) prefs.exo = lu.exo;
 } catch (e) { /* préférences absentes */ }
 const savePrefs = () => { try { localStorage.setItem('solfege.prefs', JSON.stringify(prefs)); } catch (e) { /* stockage indisponible */ } };
@@ -137,6 +141,7 @@ async function lancer(exo) {
     if (exo === 'notes') await startNotes(); else if (exo === 'noms') await startEnreg(); else await startChant(exo);
     $('result').textContent = ''; delete $('result').dataset.alerte;
     $('debug').hidden = !DEBUG; $('debug').textContent = '';
+    $('regler').hidden = S.kind === 'enreg'; $('aides').hidden = S.kind !== 'chant';
     show('page'); render(); ligne(); levelLoop();
     if (navigator.wakeLock && !verrou) navigator.wakeLock.request('screen').then((l) => { verrou = l; }).catch(() => {});
     if (S && S.input !== 'midi') {
@@ -394,9 +399,9 @@ function sauver(s) {
         return [n.clef === 'fa' ? 1 : 0, n.p, q ? CODE[q.v] : null, q ? (q.cls ?? q.midi ?? null) : null, q && q.time !== undefined ? Math.round((q.time - t0) * 1000) : null];
       }) });
   } else if (s.kind === 'chant' && s.results.length) {
-    // Un exercice chanté = [ce qui était demandé, temps pour le chanter (ms), écart médian de chaque note (cents), réécoutes]
+    // Un exercice chanté = [ce qui était demandé, temps pour le chanter (ms), écart médian de chaque note (cents), réécoutes, reprises, aides]
     saveSession({ id: s.id, fmt: 2, app: VERSION, at: s.at, mode: s.exo, input: 'chant', n: s.results.length, ok: s.results.length,
-      tol: TOL, tenue: s.hold.holdMs, items: s.results.slice(-500).map((r) => [r.quoi, r.ms, r.cents, r.replays]) });
+      tol: TOL, tenue: s.hold.holdMs, items: s.results.slice(-500).map((r) => [r.quoi, r.ms, r.cents, r.replays, r.reprises, r.aides]) });
   }
 }
 function saveSession(rec) {
@@ -423,7 +428,7 @@ function diagFile() {
   } else if (S.kind === 'chant') {
     meta = { ...commun, tol: TOL, tenue: S.hold.holdMs, reglages: S.r,
       // par exercice chanté : ce qui était demandé, temps (ms), écart médian de chaque note (cents), réécoutes
-      resultats: S.results.map((r) => [r.quoi, r.ms, r.cents, r.replays]) };
+      resultats: S.results.map((r) => [r.quoi, r.ms, r.cents, r.replays, r.reprises, r.aides]) };
   } else {
     const n = Math.min(S.notes.length, S.suivi.best() + 48);
     meta = { ...commun, modele: { version: S.model.version, trained: S.model.trained },
@@ -466,7 +471,7 @@ async function startChant(exo) {
   const au = await ouvrirSon(), banc = await chargerPiano(au.ctx);
   const at = new Date().toISOString(), pitch = new Pitch({ win: 1024 });
   const s = { kind: 'chant', exo, input: 'chant', r: JSON.parse(JSON.stringify(prefs[exo])), banc, pitch, hold: new Hold({ tol: TOL, holdMs: tenue() }),
-    forced: params.get(IMPOSE[exo]) ? params.get(IMPOSE[exo]).split(',') : null, it: null, j: 0, n: 0, track: [], results: [], replays: 0, phase: 'ecoute', part: 0,
+    forced: params.get(IMPOSE[exo]) ? params.get(IMPOSE[exo]).split(',') : null, it: null, j: 0, n: 0, track: [], results: [], replays: 0, reprises: 0, aides: 0, fauxJ: -1, courbe: prefs.courbe, phase: 'ecoute', part: 0,
     level: 0, rate: au.ctx.sampleRate, pcm: [], pcmN: 0, over: false, pause: false, at, id: nouvelId(at) };
   pitch.onPitch = (q) => onPitch(s, q);
   au.lag = DEBUG ? [] : null;
@@ -493,15 +498,35 @@ function suivant() {
   } else {
     let q = tirerAccord(s.r, Math.random, s.it);
     if (f) { const [id, rac] = f.split('@'), a = ACCORDS.find((x) => x.id === id); q = { id, racine: +rac, ref: 48 + +rac, tons: a.tons.map((t) => 48 + +rac + t) }; }
-    it = { ...q, cibles: q.tons, titre: chiffrage(q.racine, q.id, s.r.notation), quoi: [q.id, q.racine] };
+    it = { ...q, cibles: q.tons, titre: chiffrage(q.racine, q.id), quoi: [q.id, q.racine] };
   }
-  s.it = it; s.j = 0; s.replays = 0; s.tVise = undefined; s.cents = [];
+  s.it = it; s.j = 0; s.replays = 0; s.reprises = 0; s.aides = 0; s.fauxJ = -1; s.tVise = undefined; s.cents = [];
   playRef();
 }
 function playRef() {
   const s = S;
   jouer(AU.ctx, s.banc, s.it.ref, REF_MS / 1000);
   s.phase = 'ecoute'; s.listenFrom = performance.now() + 30 + REF_MS + REF_TAIL_MS;
+  s.hold.reset(); s.track = []; s.part = 0;
+  renderChant();
+}
+
+// Pas à tâtons : une autre note tenue, ou trop de temps pour trouver la suivante, et l'exercice reprend à sa première note,
+// après avoir fait réentendre la note de départ. La note où l'on a buté reste rouge pendant ce temps.
+function reprise() {
+  const s = S;
+  s.reprises += 1; s.fauxJ = s.j; s.j = 0; s.cents = [];
+  playRef();
+}
+// Aide : toutes les notes ensemble (plaqué) ou l'une après l'autre (arpégé), puis on reprend à la première.
+function aide(mode) {
+  const s = S;
+  if (!s || s.kind !== 'chant' || s.over || s.pause || !s.it || s.phase === 'tenu') return;
+  const notes = s.exo === 'accords' ? s.it.tons : s.exo === 'portee' ? s.it.notes.map((n) => n.midi) : [s.it.ref, s.it.cible];
+  const pas = mode === 'arpege' ? 0.55 : 0, dur = mode === 'arpege' ? 1.0 : 1.8;
+  notes.forEach((m, i) => jouer(AU.ctx, s.banc, m, dur, pas ? 0.9 : 0.9 / Math.sqrt(notes.length), i * pas));
+  s.aides += 1; s.j = 0; s.cents = []; s.fauxJ = -1;
+  s.phase = 'ecoute'; s.listenFrom = performance.now() + 30 + ((notes.length - 1) * pas + dur) * 1000 + REF_TAIL_MS;
   s.hold.reset(); s.track = []; s.part = 0;
   renderChant();
 }
@@ -513,23 +538,31 @@ function onPitch(sess, q) {
   if (S.pause) return;
   const now = performance.now();
   if (S.phase === 'ecoute') {
-    if (now < S.listenFrom) return;                      // la référence sonne : on n'écoute pas la voix
-    S.phase = 'vise'; S.hold.reset();
+    if (now < S.listenFrom) return;                      // le piano sonne : on n'écoute pas la voix
+    S.phase = 'vise'; S.hold.reset(); S.fauxJ = -1; S.tNote = now;
     if (S.tVise === undefined) S.tVise = now;
     renderChant();
   }
   if (S.phase !== 'vise') return;
-  const r = S.hold.push(q, S.it.cibles[S.j]);
+  const cible = S.it.cibles[S.j], r = S.hold.push(q, cible);
   S.part = r.part;
   S.track.push({ t: q.time, c: r.voiced ? r.cents : null });
   if (S.track.length > 100 * (TRACE_S + 1)) S.track.splice(0, 100);
-  if (DEBUG) $('debug').textContent = `v${VERSION} · ${S.rate} Hz · ${q.f0 ? q.f0.toFixed(1) + ' Hz' : 'pas de note'} · netteté ${q.clarity.toFixed(2)} · écart ${r.cents === null ? '?' : Math.round(r.cents) + ' cents'} · bande ±${TOL}, tenue ${S.hold.holdMs} ms`;
-  if (!r.done) return;
+  if (DEBUG) $('debug').textContent = `v${VERSION} · ${S.rate} Hz · ${q.f0 ? q.f0.toFixed(1) + ' Hz' : 'pas de note'} · netteté ${q.clarity.toFixed(2)} · écart ${r.cents === null ? '?' : Math.round(r.cents) + ' cents'} · bande ±${TOL}, tenue ${S.hold.holdMs} ms · reprises ${S.reprises}`;
+  if (!r.done) {
+    if (S.j > 0 && now - S.tNote > S.hold.holdMs + CHERCHE_MS) { reprise(); return; }
+    if (r.faux !== null) {
+      // la note précédente, encore tenue, n'est pas une fausse note
+      const d = S.j > 0 ? r.faux + 100 * (cible - S.it.cibles[S.j - 1]) : null;
+      if (d === null || Math.abs(d - 1200 * Math.round(d / 1200)) > TOL + 25) reprise();
+    }
+    return;
+  }
   S.cents.push(Math.round(r.median) || 0);
-  S.j += 1; S.hold.reset(); S.track = []; S.part = 0;
+  S.j += 1; S.hold.reset(); S.track = []; S.part = 0; S.tNote = now;
   if (S.j < S.it.cibles.length) { renderChant(); return; }
   S.n += 1;
-  S.results.push({ quoi: S.it.quoi, ms: Math.round(now - S.tVise), cents: S.cents, replays: S.replays });
+  S.results.push({ quoi: S.it.quoi, ms: Math.round(now - S.tVise), cents: S.cents, replays: S.replays, reprises: S.reprises, aides: S.aides });
   S.phase = 'tenu'; renderChant(); ligne();
   if (S.n % 8 === 0) sauver(S);
   S.nextT = setTimeout(() => { if (S === sess && !S.over && !S.pause) suivant(); }, NEXT_MS);
@@ -543,7 +576,7 @@ function chantLayout() {
   const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
   const W = Math.floor(Math.min(window.innerWidth - padX, 760)), s = Math.min(Math.floor(W / 22 * 2) / 2, 20);
   const yb = Math.round(7.4 * s), y0 = Math.round(11.8 * s), hc = Math.round(9 * s);
-  return { W, s, yb, y0, hc, H: y0 + hc + 4, xa: 0.4 * s, xb: W - 0.8 * s };
+  return { W, s, yb, y0, hc, H: S && S.courbe === false ? y0 : y0 + hc + 4, xa: 0.4 * s, xb: W - 0.8 * s };
 }
 function renderChant() {
   if (!S || S.kind !== 'chant' || !S.it) return;
@@ -553,25 +586,27 @@ function renderChant() {
   let o = '', label;
   if (S.exo === 'portee') {
     // la première note est bleue pendant qu'elle sonne ; une note tenue s'efface en gris ; le repère montre la note à chanter
-    const etats = it.notes.map((q, i) => (i < S.j ? DONE : S.phase === 'ecoute' && i === 0 ? BLUE : INK));
+    const etats = it.notes.map((q, i) => (S.phase === 'ecoute' && i === S.fauxJ ? RED : i < S.j ? DONE : S.phase === 'ecoute' && i === 0 ? BLUE : INK));
     o += porteeChant(it.notes, etats, vise ? S.j : -1, W, s, yb);
     label = `Deux notes à chanter : ${INTERVALLES[it.st].nom} ${sensDe(it.st, it.sens)}.`;
   } else {
     const accord = S.exo === 'accords';
     o += `<text id="titre" x="${r2(W / 2)}" y="${r2((accord ? 6.6 : 5.4) * s)}" text-anchor="middle" font-family="${serif}" font-size="${r2((accord ? 4.2 : Math.min(2.4, W / s / 9.5)) * s)}" ${accord ? '' : 'font-style="italic"'} fill="${INK}">${it.titre}</text>`;
     if (it.sous) o += `<text id="sous" x="${r2(W / 2)}" y="${r2(7.5 * s)}" text-anchor="middle" font-family="${serif}" font-size="${r2(1.2 * s)}" font-style="italic" fill="${SOFT}">${it.sous}</text>`;
-    // une pastille par note à chanter : grise une fois tenue, bleue pour la note en cours
-    if (n > 1) for (let i = 0; i < n; i++) {
-      const x = W / 2 + (i - (n - 1) / 2) * 1.7 * s, fait = i < S.j, cur = vise && i === S.j;
-      o += `<circle data-c="${i}" cx="${r2(x)}" cy="${r2(9.7 * s)}" r="${r2(0.3 * s)}" fill="${fait ? DONE : cur ? BLUE : 'none'}" stroke="${fait ? 'none' : cur ? BLUE : LINE}" stroke-width="1.2"/>`;
+    // une pastille par note à chanter : grise une fois tenue, bleue pour la note en cours, rouge là où l'on a buté
+    for (let i = 0; i < n; i++) {
+      const x = W / 2 + (i - (n - 1) / 2) * 1.7 * s, fait = i < S.j, cur = vise && i === S.j, bute = S.phase === 'ecoute' && i === S.fauxJ;
+      o += `<circle data-c="${i}" cx="${r2(x)}" cy="${r2(9.7 * s)}" r="${r2(0.3 * s)}" fill="${bute ? RED : fait ? DONE : cur ? BLUE : 'none'}" stroke="${bute || fait ? 'none' : cur ? BLUE : LINE}" stroke-width="1.2"/>`;
     }
     label = accord ? `Accord ${it.titre} : ${n} notes à chanter de bas en haut.` : `${it.titre} ${it.sous}.`;
   }
-  o += `<rect id="bande" x="${r2(xa)}" y="${r2(yc(TOL))}" width="${r2(xb - xa)}" height="${r2(yc(-TOL) - yc(TOL))}" fill="${BLUE}" opacity="0.16"/>`;
-  for (const c of [-300, -200, -100, 100, 200, 300]) o += `<line x1="${r2(xa)}" y1="${r2(yc(c))}" x2="${r2(xb)}" y2="${r2(yc(c))}" stroke="${LINE}" stroke-width="0.6" opacity="0.35"/>`;
-  o += `<line x1="${r2(xa)}" y1="${r2(yc(0))}" x2="${r2(xb)}" y2="${r2(yc(0))}" stroke="${BLUE}" stroke-width="1" opacity="0.6"/>`;
-  o += `<path id="trace" d="" fill="none" stroke="${BLUE}" stroke-width="${r2(Math.max(2.2, s / 6))}" stroke-linecap="round" stroke-linejoin="round"/>`;
-  o += `<circle id="voix" cx="${r2(xb)}" cy="-99" r="${r2(s * 0.36)}" fill="${BLUE}"/>`;
+  if (S.courbe) {
+    o += `<rect id="bande" x="${r2(xa)}" y="${r2(yc(TOL))}" width="${r2(xb - xa)}" height="${r2(yc(-TOL) - yc(TOL))}" fill="${BLUE}" opacity="0.16"/>`;
+    for (const c of [-300, -200, -100, 100, 200, 300]) o += `<line x1="${r2(xa)}" y1="${r2(yc(c))}" x2="${r2(xb)}" y2="${r2(yc(c))}" stroke="${LINE}" stroke-width="0.6" opacity="0.35"/>`;
+    o += `<line x1="${r2(xa)}" y1="${r2(yc(0))}" x2="${r2(xb)}" y2="${r2(yc(0))}" stroke="${BLUE}" stroke-width="1" opacity="0.6"/>`;
+    o += `<path id="trace" d="" fill="none" stroke="${BLUE}" stroke-width="${r2(Math.max(2.2, s / 6))}" stroke-linecap="round" stroke-linejoin="round"/>`;
+    o += `<circle id="voix" cx="${r2(xb)}" cy="-9999" r="${r2(s * 0.36)}" fill="${BLUE}"/>`;
+  }
   $('systems').style.gap = '0px';
   $('systems').innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${label} Toucher pour réentendre la note de départ.">${o}</svg>`;
 }
@@ -591,8 +626,8 @@ function chantLoop() {
       d += `${pen ? 'L' : 'M'}${r2(x)} ${r2(yy)}`; pen = true; last = yy;
     }
     tr.setAttribute('d', d);
-    dot.setAttribute('cy', S.track[S.track.length - 1].c === null || last === null ? -99 : r2(last));
-  } else if (tr) { tr.setAttribute('d', ''); dot.setAttribute('cy', -99); }
+    dot.setAttribute('cy', S.track[S.track.length - 1].c === null || last === null ? -9999 : r2(last));
+  } else if (tr) { tr.setAttribute('d', ''); dot.setAttribute('cy', -9999); }
   const mine = S;
   requestAnimationFrame(() => { if (S === mine) chantLoop(); });
 }
@@ -652,9 +687,8 @@ function renderEnreg() {
 }
 
 // ---------- réglages ----------
-// Ouverts depuis l'exercice, qui attend. On y change d'exercice et tous ses paramètres ; à la fermeture, l'exercice
-// reprend, ou repart avec les nouveaux réglages s'ils ont changé.
-const EXOS = [['Lecture', [['notes', 'Notes'], ['noms', 'Intervalles']]], ['Chant', [['intervalles', 'Intervalles'], ['portee', 'Portée'], ['accords', 'Accords']]]];
+// Ouverts depuis l'exercice, qui attend : seulement les réglages de cet exercice. À la fermeture, il reprend, ou repart
+// avec les nouveaux réglages s'ils ont changé. On change d'exercice depuis l'accueil.
 let avant = '';
 const rang = (titre, corps) => `<div class="rang">${titre ? `<span>${titre}</span>` : ''}${corps}</div>`;
 const radios = (k, opts, cur) => `<div class="choice" role="radiogroup">${opts.map(([v, t]) => `<button type="button" role="radio" aria-checked="${v === cur}" data-a="set" data-k="${k}" data-v="${v}">${t}</button>`).join('')}</div>`;
@@ -666,8 +700,8 @@ function etendueHTML(clef) {
   return `<div class="etendue">${miniPortee(clef, lo, hi, 9)}<div class="pas">${fleches(`${clef}.0`, lo > P_MIN, hi - lo > 2, 'Note la plus grave')}<i></i>${fleches(`${clef}.1`, hi - lo > 2, hi < P_MAX, 'Note la plus aiguë')}</div></div>`;
 }
 function reglagesHTML() {
-  const e = prefs.exo, r = prefs[e];
-  let h = EXOS.map(([titre, liste]) => rang(titre, radios('exo', liste, e))).join('');
+  const e = S.exo, r = prefs[e];
+  let h = '';
   if (e === 'notes') {
     h += rang('Clé', radios('notes.clef', [['sol', 'Clé de sol'], ['fa', 'Clé de fa'], ['deux', 'Les deux']], r.clef));
     h += rang('Étendue', (r.clef === 'deux' ? ['sol', 'fa'] : [r.clef]).map(etendueHTML).join(''));
@@ -675,12 +709,9 @@ function reglagesHTML() {
       h += rang('Réponse', radios('notes.input', [['voix', 'À la voix'], ['midi', 'Au clavier']], r.input));
       if (r.input === 'midi' && !midi.inputs().length) h += `<p class="consigne">${midi.refus ? 'Accès MIDI refusé par le navigateur.' : 'Aucun clavier MIDI détecté. Branche-le : la lecture reste à la voix en attendant.'}</p>`;
     }
-  } else if (e === 'noms') {
-    h += '<p class="consigne">Cet exercice attend un enregistrement de ta voix.</p>';
   } else {
     if (e === 'accords') {
-      h += rang('Accords', coches('accords.types', ACCORDS.map((a) => [a.id, chiffrage(0, a.id, r.notation)]), (v) => r.types.includes(v)));
-      h += rang('Écriture', radios('accords.notation', [['lettres', 'Cm7 · Cmaj7'], ['signes', 'C–7 · C∆7']], r.notation));
+      h += rang('Accords', coches('accords.types', ACCORDS.map((a) => [a.id, chiffrage(0, a.id)]), (v) => r.types.includes(v)));
     } else {
       h += rang('Intervalles', coches(`${e}.iv`, TOUS.map((st) => [st, INTERVALLES[st].court, INTERVALLES[st].nom]), (v) => r.iv.includes(v)));
       h += rang('Sens', coches(e, [['montant', 'Montant'], ['descendant', 'Descendant']], (v) => !!r[v]));
@@ -689,6 +720,7 @@ function reglagesHTML() {
     const t = prefs.tenue;
     h += rang('Tenue de la note', `<div class="pas"><button type="button" data-a="pas" data-k="tenue" data-v="-1" aria-label="Tenue plus courte"${t > 300 ? '' : ' disabled'}>−</button><output>${(t / 1000).toFixed(1).replace('.', ',')} s</output>`
       + `<button type="button" data-a="pas" data-k="tenue" data-v="1" aria-label="Tenue plus longue"${t < 2000 ? '' : ' disabled'}>+</button></div>`);
+    h += rang('', coches('courbe', [['courbe', 'Courbe de la voix']], () => prefs.courbe));
   }
   if (DEBUG && S && S.pcm && S.pcmN) h += '<button type="button" id="share" data-a="part">Partager l\'audio de la séance</button>';
   return h;
@@ -704,19 +736,20 @@ function ouvrirReglages() {
 function fermerReglages() {
   $('sheet').hidden = true;
   if (!S) return;
-  if (JSON.stringify(prefs) !== avant) { savePrefs(); lancer(prefs.exo); return; }
+  if (JSON.stringify(prefs) !== avant) { savePrefs(); lancer(S.exo); return; }
   S.pause = false;
   if (S.kind === 'notes' && S.rec) S.tStart = S.rec.time;               // ce qui a été dit pendant les réglages ne compte pas
-  if (S.kind === 'chant') { if (S.phase === 'tenu') suivant(); else playRef(); }
+  if (S.kind === 'chant') { if (S.phase === 'tenu') suivant(); else { S.j = 0; S.cents = []; playRef(); } }
   render();
 }
 function reglage(b) {
   const a = b.dataset.a, k = b.dataset.k, v = b.dataset.v;
   if (a === 'part') { shareAudio(); return; }
   if (a === 'set') {
-    if (k === 'exo') prefs.exo = v;
-    else { const [e, c] = k.split('.'); prefs[e][c] = v; }
+    const [e, c] = k.split('.'); prefs[e][c] = v;
     if (k === 'notes.input' && v === 'midi') midi.open().catch(() => { midi.refus = true; }).then(() => { if (!$('sheet').hidden) $('reglages').innerHTML = reglagesHTML(); });
+  } else if (a === 'tog' && k === 'courbe') {
+    prefs.courbe = !prefs.courbe;
   } else if (a === 'tog') {
     const [e, c] = k.split('.'), r = prefs[e];
     if (c) {                                                            // liste : intervalles ou accords, il en reste toujours un
@@ -773,12 +806,13 @@ document.querySelector('h1').addEventListener('click', () => {
 });
 $('quit').addEventListener('click', quitter);
 $('regler').addEventListener('click', ouvrirReglages);
+$('aides').addEventListener('click', (e) => { const b = e.target.closest('button[data-h]'); if (b) aide(b.dataset.h); });
 $('fermer').addEventListener('click', fermerReglages);
 $('reglages').addEventListener('click', (e) => { const b = e.target.closest('button[data-a]'); if (b && !b.disabled) reglage(b); });
 $('systems').addEventListener('click', (e) => {
   if (!S || S.over || S.pause) return;
-  // chant : toucher l'exercice rejoue la note de départ
-  if (S.kind === 'chant' && S.phase === 'vise') { S.replays += 1; playRef(); return; }
+  // chant : toucher l'exercice rejoue la note de départ, et l'on reprend à la première note
+  if (S.kind === 'chant' && S.phase === 'vise') { S.replays += 1; S.j = 0; S.cents = []; S.fauxJ = -1; playRef(); return; }
   const b = e.target.closest('button[data-e]');
   if (b && S.kind === 'enreg') { if (b.dataset.e === 'go') serie(); else shareAudio(); }
 });

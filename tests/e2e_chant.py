@@ -36,88 +36,91 @@ async def page(p, base, chemin, extra='', prefs=None):
     await pg.goto(base + '?debug' + extra); await pg.wait_for_timeout(700)
     return b, pg, errs
 
-ETAT = "() => { const s = window.__solfege.session; return s && { exo: s.exo, phase: s.phase, j: s.j, n: s.n, pause: s.pause, titre: s.it && s.it.titre, sous: s.it && s.it.sous, cibles: s.it && s.it.cibles, res: s.results, tenue: s.hold && s.hold.holdMs, etat: window.__solfege.son && window.__solfege.son.ctx.state }; }"
+ETAT = "() => { const s = window.__solfege.session; return s && { exo: s.exo, phase: s.phase, j: s.j, n: s.n, pause: s.pause, titre: s.it && s.it.titre, sous: s.it && s.it.sous, cibles: s.it && s.it.cibles, res: s.results, reprises: s.reprises, aides: s.aides, tenue: s.hold && s.hold.holdMs, etat: window.__solfege.son && window.__solfege.son.ctx.state }; }"
 shot = lambda pg, nom: pg.screenshot(path=os.path.join(ICI, nom))
 
 async def main():
     with serveur() as (base, _):
         async with async_playwright() as p:
-            # 1. Intervalles, note de départ chantée. Au deuxième, la voix tient d'abord un ton trop bas.
-            w = wav('chant_iv.wav', [(2.0, 1.4, 48), (3.6, 1.4, 55), (6.9, 1.0, 58), (8.1, 1.4, 60), (9.7, 1.4, 56)], 14)
+            # 1. Intervalles, note de départ chantée. Au deuxième, la voix tient d'abord un ton trop bas : reprise.
+            w = wav('chant_iv.wav', [(2.0, 1.4, 48), (3.6, 1.4, 55), (6.9, 0.8, 58), (9.4, 1.4, 60), (10.9, 1.4, 56)], 15)
             b, pg, errs = await page(p, base, w, '&iv=48:55,60:56')
             await shot(pg, 'accueil.png')
             await pg.click('#liste button[data-exo="intervalles"]'); await pg.wait_for_timeout(900)
-            e0 = await pg.evaluate(ETAT); await shot(pg, 'iv_ecoute.png')
-            await pg.wait_for_timeout(2300)            # ≈ 3,3 s : la note de départ est tenue, la quinte reste à chanter
-            e1 = await pg.evaluate(ETAT); await shot(pg, 'iv_vise.png')
-            await pg.wait_for_timeout(4500)            # ≈ 7,8 s : deuxième intervalle, la voix tient un ton trop bas
-            e2 = await pg.evaluate(ETAT); await shot(pg, 'iv_faux.png')
-            await pg.wait_for_timeout(3300)            # ≈ 11,1 s
-            e3 = await pg.evaluate(ETAT); bas = await pg.inner_text('#result')
-            await pg.wait_for_timeout(1500); e4 = await pg.evaluate(ETAT)
-            print('1. Intervalles :', e0['titre'], e0['sous'], e0['cibles'], '| au début', e0['phase'], '| à 3,3 s : note', e1['j'], e1['phase'], '| à 7,8 s (ton trop bas tenu) :', e2['titre'], e2['sous'], 'note', e2['j'], 'trouvés', e2['n'])
-            print('   à 11 s : trouvés', e3['n'], '| écarts (cents)', [r['cents'] for r in e3['res']], '| temps (ms)', [r['ms'] for r in e3['res']], '| ligne du bas', repr(bas), '| ensuite, sans rien toucher :', e4['titre'], e4['sous'], e4['phase'], '| erreurs :', errs)
+            e0 = await pg.evaluate(ETAT)
+            await pg.wait_for_timeout(2300); e1 = await pg.evaluate(ETAT)       # ≈ 3,3 s : la note de départ est tenue
+            await pg.wait_for_timeout(4800); e2 = await pg.evaluate(ETAT)       # ≈ 8,1 s : un ton trop bas a été tenu
+            rouge = await pg.evaluate("() => Array.from(document.querySelectorAll('#systems circle[data-c]')).map(c => c.getAttribute('fill'))")
+            await shot(pg, 'iv_reprise.png')
+            await pg.wait_for_timeout(4700); e3 = await pg.evaluate(ETAT); bas = await pg.inner_text('#result')      # ≈ 12,8 s
+            print('1. Intervalles :', e0['titre'], e0['sous'], e0['cibles'], '| à 3,3 s : note', e1['j'], e1['phase'], '| à 8,1 s, après un ton trop bas tenu 0,8 s :', e2['titre'], e2['sous'], 'phase', e2['phase'], 'reprises', e2['reprises'], 'pastilles', rouge)
+            print('   à 12,8 s : trouvés', e3['n'], '| écarts', [r['cents'] for r in e3['res']], '| reprises', [r['reprises'] for r in e3['res']], '| ligne du bas', repr(bas), '| erreurs :', errs)
             await pg.click('#quit'); await pg.wait_for_timeout(200)
             st = await pg.evaluate("() => JSON.parse(localStorage.getItem('solfege.sessions') || '[]').pop()")
-            print('   séance gardée :', {k: st[k] for k in ('mode', 'input', 'n', 'tol', 'tenue')}, st['items'][:2], '| son fermé :', await pg.evaluate("() => window.__solfege.son === null"))
+            print('   séance gardée :', {k: st[k] for k in ('mode', 'n', 'tenue')}, st['items'][:2], '| son fermé :', await pg.evaluate("() => window.__solfege.son === null"))
             await b.close()
 
-            # 2. Accords : D mineur 7, quatre notes de bas en haut.
-            w = wav('chant_ac.wav', [(2.0, 1.4, 50), (3.6, 1.4, 53), (5.2, 1.4, 57), (6.8, 1.4, 60)], 11)
+            # 2. Accords : D–7. La voix tient sol au lieu de fa (reprise), puis chante tout, en restant une seconde de trop sur le ré.
+            w = wav('chant_ac.wav', [(2.0, 1.4, 50), (3.6, 1.0, 55), (6.3, 1.9, 50), (8.3, 1.4, 53), (9.8, 1.4, 57), (11.3, 1.4, 60)], 14)
             b, pg, errs = await page(p, base, w, '&ac=m7@2')
-            await pg.click('#liste button[data-exo="accords"]'); await pg.wait_for_timeout(4300)
-            e1 = await pg.evaluate(ETAT); await shot(pg, 'ac_vise.png')
+            await pg.click('#liste button[data-exo="accords"]'); await pg.wait_for_timeout(3300)
+            e1 = await pg.evaluate(ETAT)
+            await pg.wait_for_timeout(1500); e2 = await pg.evaluate(ETAT); await shot(pg, 'ac_reprise.png')           # ≈ 4,8 s
             pastilles = await pg.evaluate("() => Array.from(document.querySelectorAll('#systems circle[data-c]')).map(c => c.getAttribute('fill'))")
-            await pg.wait_for_timeout(4300); e2 = await pg.evaluate(ETAT)
-            print('2. Accords :', e1['titre'], e1['cibles'], '| à 4,3 s : note', e1['j'], '| pastilles', pastilles, '| à 8,6 s : trouvés', e2['n'], '| écarts', [r['cents'] for r in e2['res']], '| ensuite', e2['titre'], '| erreurs :', errs)
+            await pg.wait_for_timeout(3200); e3 = await pg.evaluate(ETAT)                                             # ≈ 8,0 s : ré tenu depuis 1,7 s
+            await pg.wait_for_timeout(5000); e4 = await pg.evaluate(ETAT)                                             # ≈ 13 s
+            print('2. Accords :', e1['titre'], e1['cibles'], '| à 3,3 s : note', e1['j'], '| à 4,8 s, sol tenu au lieu de fa : phase', e2['phase'], 'note', e2['j'], 'reprises', e2['reprises'], 'pastilles', pastilles)
+            print('   à 8,0 s, ré encore tenu après sa validation : note', e3['j'], 'reprises', e3['reprises'], '| à 13 s : trouvés', e4['n'], '| écarts', [r['cents'] for r in e4['res']], '| reprises', [r['reprises'] for r in e4['res']], '| erreurs :', errs)
             await b.close()
 
-            # 3. Portée : fa puis la bémol, chantés une octave plus bas.
-            w = wav('chant_pt.wav', [(2.0, 1.4, 53), (3.6, 1.4, 56)], 8)
+            # 3. Portée : fa puis la bémol, une octave plus bas. Après le fa, la voix se tait trop longtemps : reprise.
+            w = wav('chant_pt.wav', [(2.0, 1.4, 53), (7.6, 1.4, 53), (9.1, 1.4, 56)], 12)
             b, pg, errs = await page(p, base, w, '&pt=1:3:-1')
-            await pg.click('#liste button[data-exo="portee"]'); await pg.wait_for_timeout(900); await shot(pg, 'pt_ecoute.png')
-            await pg.wait_for_timeout(2400); e1 = await pg.evaluate(ETAT); await shot(pg, 'pt_vise.png')
-            dessin = await pg.evaluate("() => [document.querySelectorAll('#systems path[data-c]').length, document.querySelectorAll('#systems polygon').length, document.querySelectorAll('#systems text').length]")
-            await pg.wait_for_timeout(2500); e2 = await pg.evaluate(ETAT)
-            print('3. Portée : cibles', e1['cibles'], '| à 3,3 s : note', e1['j'], '| têtes de note, repères, textes :', dessin, '| à 5,8 s : trouvés', e2['n'], '| écarts', [r['cents'] for r in e2['res']], '| erreurs :', errs)
+            await pg.click('#liste button[data-exo="portee"]'); await pg.wait_for_timeout(3300)
+            e1 = await pg.evaluate(ETAT); await shot(pg, 'pt_vise.png')
+            await pg.wait_for_timeout(2900); e2 = await pg.evaluate(ETAT); await shot(pg, 'pt_reprise.png')           # ≈ 6,2 s
+            tetes = await pg.evaluate("() => Array.from(document.querySelectorAll('#systems path[data-c]')).map(c => c.getAttribute('fill'))")
+            await pg.wait_for_timeout(4800); e3 = await pg.evaluate(ETAT)                                             # ≈ 11 s
+            print('3. Portée : cibles', e1['cibles'], '| à 3,3 s : note', e1['j'], '| à 6,2 s, après 2,7 s sans la seconde note : phase', e2['phase'], 'note', e2['j'], 'reprises', e2['reprises'], 'têtes', tetes, '| à 11 s : trouvés', e3['n'], '| reprises', [r['reprises'] for r in e3['res']], '| erreurs :', errs)
             await b.close()
 
-            # 4. Réglages, ouverts depuis l'exercice : pause, changement d'exercice, paramètres, étendue.
+            # 4. Réglages de l'exercice en cours seulement ; courbe masquée ; aides plaqué et arpégé.
             w = wav('silence.wav', [], 30)
             b, pg, errs = await page(p, base, w)
-            await pg.click('#liste button[data-exo="intervalles"]'); await pg.wait_for_timeout(1800)
+            await pg.click('#liste button[data-exo="accords"]'); await pg.wait_for_timeout(1800)
+            aides = await pg.evaluate("() => Array.from(document.querySelectorAll('#aides button')).map(b => b.textContent)")
+            await pg.click('#aides button[data-h="arpege"]'); await pg.wait_for_timeout(150); a1 = await pg.evaluate(ETAT)
+            await pg.wait_for_timeout(3600); a2 = await pg.evaluate(ETAT)
+            await pg.click('#aides button[data-h="plaque"]'); await pg.wait_for_timeout(150); a3 = await pg.evaluate(ETAT)
+            print('4. Aides', aides, ': arpégé →', a1['phase'], 'aides', a1['aides'], '| 3,7 s plus tard', a2['phase'], 'note', a2['j'], '| plaqué →', a3['phase'], 'aides', a3['aides'])
             await pg.click('#regler'); await pg.wait_for_timeout(200)
-            e1 = await pg.evaluate(ETAT); await shot(pg, 'reglages_intervalles.png')
-            for v in ('1', '6', '10', '11'): await pg.click(f'#reglages button[data-k="intervalles.iv"][data-v="{v}"]')
-            await pg.click('#reglages button[data-k="intervalles"][data-v="descendant"]')
-            await pg.click('#reglages button[data-k="intervalles"][data-v="montant"]')      # refusé : il reste toujours un sens
-            await pg.click('#reglages button[data-k="exo"][data-v="accords"]'); await pg.wait_for_timeout(100)
-            await shot(pg, 'reglages_accords.png')
+            e1 = await pg.evaluate(ETAT); await shot(pg, 'reglages_accords.png')
+            sheet = await pg.evaluate("() => ({ exos: document.querySelectorAll('#reglages [data-k=\"exo\"]').length, ecriture: document.querySelectorAll('#reglages [data-k=\"accords.notation\"]').length, accords: Array.from(document.querySelectorAll('#reglages [data-k=\"accords.types\"]')).map(b => b.textContent).join(' '), rangs: Array.from(document.querySelectorAll('#reglages .rang > span')).map(s => s.textContent) })")
             for v in ('aug', 'dim', 'mMaj7'): await pg.click(f'#reglages button[data-k="accords.types"][data-v="{v}"]')
-            await pg.click('#reglages button[data-k="accords.notation"][data-v="signes"]')
             await pg.click('#reglages button[data-k="tenue"][data-v="1"]')
+            await pg.click('#reglages button[data-k="courbe"]')
             await pg.click('#fermer'); await pg.wait_for_timeout(1200)
             e2 = await pg.evaluate(ETAT); pr = await pg.evaluate("() => JSON.parse(localStorage.getItem('solfege.prefs'))")
-            print('4. Réglages : exercice en pause', e1['pause'], '| après fermeture :', e2['exo'], e2['titre'], 'tenue', e2['tenue'], 'ms, contexte audio', e2['etat'])
-            print('   gardé : intervalles', pr['intervalles'], '| accords', pr['accords'], '| tenue', pr['tenue'])
-            await pg.click('#regler'); await pg.click('#fermer'); await pg.wait_for_timeout(300)
-            e3 = await pg.evaluate(ETAT)
-            print('   ouverts puis fermés sans rien changer : même exercice', e3['titre'] == e2['titre'], '| phase', e3['phase'], '| pause', e3['pause'])
+            sans = await pg.evaluate("() => [document.getElementById('trace') === null, document.querySelector('#systems svg').getAttribute('height')]")
+            await shot(pg, 'ac_sans_courbe.png')
+            print('   réglages : pause', e1['pause'], '|', sheet, '| après fermeture :', e2['exo'], e2['titre'], 'tenue', e2['tenue'], '| gardé : accords', pr['accords'], 'tenue', pr['tenue'], 'courbe', pr['courbe'], '| courbe absente, hauteur du dessin :', sans)
+            await pg.click('#quit'); await pg.wait_for_timeout(200)
+            await pg.click('#liste button[data-exo="notes"]'); await pg.wait_for_timeout(900)
             await pg.click('#regler')
-            await pg.click('#reglages button[data-k="exo"][data-v="notes"]')
             await pg.click('#reglages button[data-k="notes.clef"][data-v="deux"]')
             for k, v, n in (('sol.0', '-1', 3), ('sol.1', '1', 4), ('fa.0', '-1', 4), ('fa.1', '-1', 2)):
                 for _ in range(n): await pg.click(f'#reglages button[data-k="{k}"][data-v="{v}"]')
+            rangs = await pg.evaluate("() => Array.from(document.querySelectorAll('#reglages .rang > span')).map(s => s.textContent)")
             await shot(pg, 'reglages_notes.png')
             await pg.click('#fermer'); await pg.wait_for_timeout(900)
-            e4 = await pg.evaluate("() => { const s = window.__solfege.session; return { kind: s.kind, clefs: s.clefs, et: s.et, min: Math.min(...s.notes.filter(n => n.clef === 'fa').map(n => n.p)), max: Math.max(...s.notes.filter(n => n.clef === 'sol').map(n => n.p)), svg: document.querySelectorAll('#systems svg').length }; }")
-            await shot(pg, 'notes_etendue.png')
-            print('   vers Lecture · Notes :', e4, '| erreurs :', errs)
+            e4 = await pg.evaluate("() => { const s = window.__solfege.session; return { kind: s.kind, clefs: s.clefs, et: s.et, aides: !document.getElementById('aides').hidden }; }")
+            print('   Lecture · Notes : rangs', rangs, '|', e4, '| erreurs :', errs)
             await b.close()
 
             # 5. Lecture d'intervalles : une série enregistrée (cadence accélérée pour le test).
             b, pg, errs = await page(p, base, w, '&periode=60')
             await pg.click('#liste button[data-exo="noms"]'); await pg.wait_for_timeout(500); await shot(pg, 'noms_intro.png')
+            print('5. bouton Réglages masqué sur l\'écran d\'enregistrement :', await pg.is_hidden('#regler'))
             await pg.click('#systems button[data-e="go"]'); await pg.wait_for_timeout(1500); await shot(pg, 'noms_dire.png')
             await pg.wait_for_timeout(2600)
             fin = await pg.inner_text('#systems')

@@ -9,8 +9,8 @@ Adresse : https://hugolangepro.github.io/solfege/
 - iPhone : ouvrir l'adresse dans Safari, puis Partager › Sur l'écran d'accueil. Lancer ensuite l'app depuis l'écran d'accueil : ses données sont séparées de celles de Safari.
 - Mac : ouvrir l'adresse dans Chrome (le MIDI n'existe pas dans Safari), puis Installer.
 - L'accueil liste les exercices : Lecture (Notes, Intervalles) et Chant (Intervalles, Portée, Accords). Un exercice ne s'arrête pas :
-  il tourne jusqu'à ce qu'on le quitte (×). « Réglages », en haut de l'exercice, le met en attente : on y change d'exercice et
-  tous ses paramètres ; à la fermeture il reprend, ou repart avec les nouveaux réglages.
+  il tourne jusqu'à ce qu'on le quitte (×). « Réglages », en haut de l'exercice, le met en attente et ne montre que les
+  réglages de cet exercice ; à la fermeture il reprend, ou repart avec les nouveaux réglages. On change d'exercice depuis l'accueil.
 - Cinq touches rapides sur le titre activent le mode diagnostic : syllabes entendues à l'écran, et partage du son de la séance depuis les réglages.
 
 ## Lecture sans fin
@@ -47,7 +47,7 @@ L'app revalide ses fichiers à chaque ouverture : la nouvelle version arrive au 
 - `pitch.js` : hauteur de la voix en flux (méthode de McLeod après un passe-bas à 1 kHz), une mesure toutes les 10 ms.
 - `chant.js` : chant. Tirage des intervalles, des notes sur la portée et des accords ; chiffrages ; jugement de la tenue.
 - `portee.js` : dessin des portées, des notes, des altérations.
-- `piano.js`, `piano/` : onze notes de piano enregistrées (voir NOTICE), transposées d'un demi-ton et demi au plus.
+- `piano.js`, `piano/` : quatorze notes de piano enregistrées (voir NOTICE), transposées d'un demi-ton et demi au plus.
 - `worklet-2.js` : relais du micro (`worklet.js` reste servi pour une page ouverte avant la mise à jour).
 - `model.json` : modèle vocal entraîné sur la voix d'Hugo (séance de mesure du 25 novembre 2026). Sept syllabes et une classe de rejet.
   Depuis la version 3, il porte aussi un filtre « syllabe dite ou autre son » : un second petit réseau sur la même image de 300 ms, qui laisse intact le modèle des syllabes.
@@ -67,17 +67,23 @@ Trois temps, sans chronomètre. Écoute : la note de départ sonne au piano ; to
 Vise : on cherche la note ; la courbe bleue montre la voix, la ligne du milieu est la note à chanter, les traits fins sont les demi-tons.
 Tiens : la note compte après la tenue réglée (0,7 s au départ, de 0,3 à 2 s) dans la bande de ±50 cents, à l'octave près ; la bande
 fonce pendant la tenue. Les 150 premières millisecondes d'une émission ne sont pas jugées, la médiane absorbe le vibrato,
-un glissando qui traverse la bande ne compte pas. Rien n'est compté faux. L'exercice suivant arrive seul.
+un glissando qui traverse la bande ne compte pas. L'exercice suivant arrive seul.
+
+Pas à tâtons : une autre note tenue une demi-seconde (à 75 cents au moins de la cible), ou plus de deux secondes au-delà de la
+tenue pour trouver la note suivante, et l'exercice reprend à sa première note après avoir fait réentendre la note de départ ;
+la note où l'on a buté reste rouge pendant ce temps. Rester sur la note précédente n'est pas une fausse note.
+« Plaqué » et « Arpégé », en bas, font entendre toutes les notes ensemble ou l'une après l'autre ; on reprend ensuite à la première.
+La courbe de la voix se masque dans les réglages.
 
 - Intervalles : le nom de l'intervalle et son sens sont écrits, sans portée. Les onze intervalles, de la seconde mineure à la
   septième majeure, se cochent un par un, ainsi que montant et descendant. Par défaut on chante d'abord la note de départ.
 - Portée : deux notes écrites en clé de sol, à chanter l'une après l'autre ; la première sonne. Mêmes choix d'intervalles.
   La première note est naturelle, la seconde porte le bémol ou le dièse que demande l'intervalle.
 - Accords : le chiffrage est écrit, la fondamentale sonne, les notes se chantent de bas en haut. Majeur, mineur, augmenté,
-  diminué, sus4, m7, maj7, 7, m(maj7), 6 ; deux écritures (Cm7 · Cmaj7 ou C–7 · C∆7).
+  diminué, sus4, mineur 7, majeur 7, 7, mineur majeur 7, 6, dans l'écriture du jazz : C–7, C∆7, C–∆7.
 - Parce que la note est jugée à l'octave près, le sens d'un intervalle n'est pas vérifié.
 - Une séance gardée : `mode` (`intervalles`, `portee`, `accords`), bande et tenue, et par exercice chanté
-  `[ce qui était demandé, temps (ms), écart médian de chaque note (cents), réécoutes]`.
+  `[ce qui était demandé, temps (ms), écart médian de chaque note (cents), réécoutes, reprises, aides]`.
 - Réglages d'essai par l'adresse : `?tol=25` (bande en cents), `?tenue=500` (ms).
 - Précision du suivi de hauteur sur sons de synthèse : moins de 0,2 cent de 73 à 880 Hz.
 

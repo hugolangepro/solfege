@@ -15,24 +15,24 @@ export const INTERVALLES = [null,
   { nom: 'septième mineure', court: '7m', deg: [6] }, { nom: 'septième majeure', court: '7M', deg: [6] }];
 export const sensDe = (st, sens) => (sens > 0 ? 'montant' : 'descendant') + (INTERVALLES[st].masc ? '' : 'e');
 
-// Accords : demi-tons au-dessus de la fondamentale, et suffixe du chiffrage dans les deux écritures courantes en jazz
-// (lettres : Cm7, Cmaj7 ; signes : C–7, C∆7). mineur = la fondamentale s'écrit comme dans une tonalité mineure.
+// Accords : demi-tons au-dessus de la fondamentale, et suffixe du chiffrage dans l'écriture du jazz : – pour mineur,
+// ∆ pour la septième majeure. mineur = la fondamentale s'écrit comme dans une tonalité mineure.
 export const ACCORDS = [
-  { id: 'maj', tons: [0, 4, 7], lettres: '', signes: '' },
-  { id: 'min', tons: [0, 3, 7], lettres: 'm', signes: '–', mineur: true },
-  { id: 'aug', tons: [0, 4, 8], lettres: '+', signes: '+' },
-  { id: 'dim', tons: [0, 3, 6], lettres: '°', signes: '°', mineur: true },
-  { id: 'sus4', tons: [0, 5, 7], lettres: 'sus4', signes: 'sus4' },
-  { id: 'm7', tons: [0, 3, 7, 10], lettres: 'm7', signes: '–7', mineur: true },
-  { id: 'maj7', tons: [0, 4, 7, 11], lettres: 'maj7', signes: '∆7' },
-  { id: '7', tons: [0, 4, 7, 10], lettres: '7', signes: '7' },
-  { id: 'mMaj7', tons: [0, 3, 7, 11], lettres: 'm(maj7)', signes: '–∆7', mineur: true },
-  { id: '6', tons: [0, 4, 7, 9], lettres: '6', signes: '6' }];
+  { id: 'maj', tons: [0, 4, 7], signe: '' },
+  { id: 'min', tons: [0, 3, 7], signe: '–', mineur: true },
+  { id: 'aug', tons: [0, 4, 8], signe: '+' },
+  { id: 'dim', tons: [0, 3, 6], signe: '°', mineur: true },
+  { id: 'sus4', tons: [0, 5, 7], signe: 'sus4' },
+  { id: 'm7', tons: [0, 3, 7, 10], signe: '–7', mineur: true },
+  { id: 'maj7', tons: [0, 4, 7, 11], signe: '∆7' },
+  { id: '7', tons: [0, 4, 7, 10], signe: '7' },
+  { id: 'mMaj7', tons: [0, 3, 7, 11], signe: '–∆7', mineur: true },
+  { id: '6', tons: [0, 4, 7, 9], signe: '6' }];
 const RACINES = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'G♭', 'G', 'A♭', 'A', 'B♭', 'B'];
 const RACINES_MIN = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
-export function chiffrage(racine, id, notation = 'lettres') {
+export function chiffrage(racine, id) {
   const a = ACCORDS.find((q) => q.id === id);
-  return (a.mineur || id === '7' && racine === 6 ? RACINES_MIN : RACINES)[racine] + a[notation === 'signes' ? 'signes' : 'lettres'];
+  return (a.mineur || id === '7' && racine === 6 ? RACINES_MIN : RACINES)[racine] + a.signe;
 }
 
 const pick = (a, rnd) => a[Math.floor(rnd() * a.length)];
@@ -77,19 +77,20 @@ export function tirerAccord(r, rnd = Math.random, prev = null) {
 // La note compte quand la voix tient `holdMs` dans la bande de ±`tol` cents autour de la cible, à l'octave près :
 // on écarte les `skipMs` premières millisecondes d'une émission (la voix cherche), on juge la médiane (le vibrato passe),
 // et on demande une hauteur stable (un glissando qui traverse la bande ne compte pas).
+// Une autre note, tenue `fauxMs` à `fauxCents` au moins de la cible, est signalée : l'app fait alors reprendre du début.
 export class Hold {
-  constructor({ tol = 50, holdMs = 700, skipMs = 150, clarity = 0.75, rmsMin = 0.002, hopMs = 10, spread = 80 } = {}) {
-    Object.assign(this, { tol, holdMs, skipMs, clarity, rmsMin, hopMs, spread });
+  constructor({ tol = 50, holdMs = 700, skipMs = 150, clarity = 0.75, rmsMin = 0.002, hopMs = 10, spread = 80, fauxMs = 500, fauxCents = 75 } = {}) {
+    Object.assign(this, { tol, holdMs, skipMs, clarity, rmsMin, hopMs, spread, fauxMs, fauxCents });
     this.reset();
   }
   reset() { this.run = []; this.gap = 0; this.last = null; }
-  // Rend { cents, voiced, done, median, part } : cents = écart à la cible replié à l'octave, null si la voix ne chante pas ;
-  // part = part de la tenue déjà faite dans la bande (0 à 1), pour l'affichage.
+  // Rend { cents, voiced, done, median, part, faux } : cents = écart à la cible replié à l'octave, null si la voix ne chante pas ;
+  // part = part de la tenue déjà faite dans la bande (0 à 1), pour l'affichage ; faux = écart d'une autre note tenue, sinon null.
   push({ f0, clarity, rms }, midi) {
     const voiced = f0 > 0 && clarity >= this.clarity && rms >= this.rmsMin;
     if (!voiced) {
       if (++this.gap > 3) this.run = [];                        // plus de 30 ms sans voix : l'émission est finie
-      return { cents: null, voiced: false, done: false, median: null, part: 0 };
+      return { cents: null, voiced: false, done: false, median: null, part: 0, faux: null };
     }
     const c = centsToClass(f0, midi);
     if (this.last !== null && this.gap <= 3 && Math.abs(c - this.last) > 150) this.run = [];   // saut de hauteur : nouvelle note
@@ -103,6 +104,14 @@ export class Hold {
       const lo = w[Math.floor(0.1 * (w.length - 1))], hi = w[Math.ceil(0.9 * (w.length - 1))];
       done = Math.abs(median) <= this.tol && hi - lo <= this.spread;
     }
-    return { cents: c, voiced: true, done, median, part: Math.min(1, n / need) };
+    // autre note tenue : hauteur stable loin de la cible (les écarts sont comparés autour du dernier, pour passer le repli à ±600)
+    let faux = null;
+    const nf = Math.round(this.fauxMs / this.hopMs);
+    if (!done && this.run.length >= skip + nf) {
+      const w = this.run.slice(-nf).map((v) => ((v - c + 1800) % 1200) - 600).sort((a, b) => a - b);
+      const med = c + w[w.length >> 1], lo = w[Math.floor(0.1 * (w.length - 1))], hi = w[Math.ceil(0.9 * (w.length - 1))];
+      if (Math.abs(med) >= this.fauxCents && hi - lo <= this.spread) faux = med;
+    }
+    return { cents: c, voiced: true, done, median, part: Math.min(1, n / need), faux };
   }
 }
