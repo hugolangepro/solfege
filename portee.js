@@ -95,9 +95,9 @@ export function miniPortee(nom, lo, hi, s) {
 }
 
 // Chant : une portée en clé de sol avec les notes à chanter. etats[i] = couleur de la note i ; cur = indice de la note en cours, ou −1.
-export function porteeChant(notes, etats, cur, W, s, yb) {
+export function porteeChant(notes, etats, cur, W, s, yb, nomClef = 'sol') {
   const a = Math.max(6, s * 0.55), x0 = 6.6 * s, dx = Math.min(4.2 * s, (W - 8.5 * s) / Math.max(1, notes.length - 1));
-  let o = lignes(0, W, yb, s) + clef('sol', 0, yb, s);
+  let o = lignes(0, W, yb, s) + clef(nomClef, 0, yb, s);
   notes.forEach((n, i) => {
     o += noteSVG(x0 + i * dx, yb, n.p, s, etats[i], n.alt, `data-c="${i}"`);
     if (i === cur) o += repere(x0 + i * dx, yb + 2.9 * s, a);

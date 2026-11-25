@@ -47,6 +47,7 @@ L'app revalide ses fichiers à chaque ouverture : la nouvelle version arrive au 
 - `pitch.js` : hauteur de la voix en flux (méthode de McLeod après un passe-bas à 1 kHz), une mesure toutes les 10 ms.
 - `chant.js` : chant. Tirage des intervalles, des notes sur la portée et des accords ; chiffrages ; jugement de la tenue.
 - `portee.js` : dessin des portées, des notes, des altérations.
+- `noms.js` : noms d'intervalles dits à voix haute, appris sur l'appareil.
 - `piano.js`, `piano/` : quatorze notes de piano enregistrées (voir NOTICE), transposées d'un demi-ton et demi au plus.
 - `worklet-2.js` : relais du micro (`worklet.js` reste servi pour une page ouverte avant la mise à jour).
 - `model.json` : modèle vocal entraîné sur la voix d'Hugo (séance de mesure du 25 novembre 2026). Sept syllabes et une classe de rejet.
@@ -90,12 +91,22 @@ ses notes à part. Retouché, il la rétablit et l'exercice de chant reprend à 
 - Réglages d'essai par l'adresse : `?tol=25` (bande en cents), `?tenue=500` (ms).
 - Précision du suivi de hauteur sur sons de synthèse : moins de 0,2 cent de 73 à 880 Hz.
 
-## Lecture d'intervalles : enregistrement
+## Lecture d'intervalles
 
-Dire le nom d'un intervalle demande un modèle vocal qui n'existe pas encore : celui des notes ne connaît que do, ré, mi, fa, sol, la, si.
-L'exercice ouvre pour l'instant un écran d'enregistrement : 44 noms affichés un par un (les onze intervalles, quatre fois chacun,
-dans le désordre), un toutes les 2,5 s. Le fichier partagé à la fin est le son reçu par l'app (WAV, 16 kHz, mono) suivi du bloc
-`sLFG` : instant d'affichage de chaque nom. Rien n'est envoyé nulle part : le fichier ne sort que par le partage.
+Deux notes à la suite sur la portée (clé de sol, clé de fa ou les deux, intervalles au choix) : dire le nom de l'intervalle.
+Le bon nom grise les notes et amène l'intervalle suivant ; un autre nom les met en rouge jusqu'à la bonne réponse. Seule la
+première réponse compte dans la cadence et la justesse.
+
+La reconnaissance des noms s'apprend sur l'appareil (`noms.js`). Sans voix apprise, l'exercice ouvre l'écran d'enregistrement :
+44 noms affichés un par un (les onze intervalles, quatre fois chacun, dans le désordre), un toutes les 2,5 s. À la fin, la série
+est découpée en énoncés (niveau au-dessus du fond sonore, 0,32 s de silence pour finir), chaque énoncé est réduit à 12 coefficients
+cepstraux par centième de seconde, et gardé comme exemple dans `solfege.noms` (quatre séries au plus). Un fichier déjà partagé
+par cet écran s'importe de la même façon. En exercice, chaque énoncé prend le nom de l'exemple le plus proche par alignement
+temporel (DTW) ; au-delà de 1,2 fois la plus grande distance observée entre exemples d'un même nom, il est ignoré.
+
+Rien ne quitte l'appareil : ni le son, ni les exemples. Chaque appareil apprend avec son propre micro.
+Mesure sur la première série d'Hugo (Mac, micro intégré) : trois dictions de chaque nom pour apprendre, la quatrième pour
+essayer, 44 noms sur 44 ; dans Chrome, l'enregistrement rejoué comme micro, 44 premières réponses justes sur 44.
 
 ## Bruits
 

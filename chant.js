@@ -50,12 +50,13 @@ export function tirerIntervalle(r, rnd = Math.random, prev = null) {
 
 // Deux notes écrites en clé de sol. La première est naturelle, entre le do sous la portée et le mi du quatrième interligne ;
 // la seconde prend le bémol ou le dièse que demande l'intervalle (alt = −1, 0, 1). Elle reste entre le la grave (−4) et le do aigu (12).
-export function tirerPortee(r, rnd = Math.random, prev = null) {
+export function tirerPortee(r, rnd = Math.random, prev = null, clef = 'sol') {
+  const haut = clef === 'fa' ? (p) => midiOf(p + 2) - 24 : midiOf;      // en clé de fa, la ligne du bas est un sol
   for (let essai = 0; ; essai++) {
     const st = pick(ivOk(r.iv), rnd), sens = pick(sensOk(r), rnd), deg = pick(INTERVALLES[st].deg, rnd);
     const p1 = -2 + Math.floor(rnd() * 10), p2 = p1 + sens * deg;
     if (p2 < -4 || p2 > 12) continue;
-    const m1 = midiOf(p1), m2 = m1 + sens * st, alt = m2 - midiOf(p2);
+    const m1 = haut(p1), m2 = m1 + sens * st, alt = m2 - haut(p2);
     if (Math.abs(alt) > 1) continue;
     const it = { st, sens, notes: [{ p: p1, alt: 0, midi: m1 }, { p: p2, alt, midi: m2 }] };
     if (essai > 40 || !prev || prev.st !== st || prev.notes[0].p !== p1 || prev.sens !== sens) return it;
