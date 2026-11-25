@@ -8,7 +8,21 @@ Adresse : https://hugolangepro.github.io/solfege/
 
 - iPhone : ouvrir l'adresse dans Safari, puis Partager › Sur l'écran d'accueil. Lancer ensuite l'app depuis l'écran d'accueil : ses données sont séparées de celles de Safari.
 - Mac : ouvrir l'adresse dans Chrome (le MIDI n'existe pas dans Safari), puis Installer.
-- Cinq touches rapides sur le titre activent le mode diagnostic : syllabes entendues à l'écran, et bouton de partage du son de la page.
+- L'accueil liste les exercices : Lecture (Notes, Intervalles) et Chant (Intervalles, Portée, Accords). Un exercice ne s'arrête pas :
+  il tourne jusqu'à ce qu'on le quitte (×). « Réglages », en haut de l'exercice, le met en attente : on y change d'exercice et
+  tous ses paramètres ; à la fermeture il reprend, ou repart avec les nouveaux réglages.
+- Cinq touches rapides sur le titre activent le mode diagnostic : syllabes entendues à l'écran, et partage du son de la séance depuis les réglages.
+
+## Lecture sans fin
+
+- Les portées gardent leur place. Dès que deux notes sont lues sur une portée, la portée précédente est remplacée par la suite ;
+  après la dernière portée, la lecture reprend en haut. Le repère bleu montre la note en cours.
+- Étendue : pour chaque clé, la note la plus grave et la plus aiguë se règlent sur la portée des réglages, jusqu'à trois lignes
+  supplémentaires de chaque côté. La place gardée autour des portées suit l'étendue.
+- L'alignement des syllabes sur les notes travaille sur une fenêtre de 48 notes (`Suivi`, dans `engine.js`) : toutes les 16 notes
+  lues, les verdicts des plus anciennes sont figés et la fenêtre repart 8 notes en arrière en rejouant les dernières syllabes.
+  Sur 2000 notes simulées, les verdicts sont ceux d'un alignement unique sur toute la séquence.
+- En bas : cadence et justesse sur les 32 dernières notes. La séance est gardée toutes les 32 notes et à la sortie.
 
 ## Mise en ligne
 
@@ -27,11 +41,13 @@ L'app revalide ses fichiers à chaque ouverture : la nouvelle version arrive au 
 
 ## Fichiers
 
-- `index.html`, `app.js` : interface et déroulement d'une page.
+- `index.html`, `app.js` : interface, déroulement des exercices, réglages.
 - `engine.js` : écoute. Rééchantillonnage à 16 kHz, log-mel, modèle vocal, détection des syllabes, alignement sur les notes attendues.
   Une syllabe est reconnue dès que le modèle la donne à 95 % deux pas de suite (40 ms), sans attendre le sommet ; les syllabes moins nettes passent par le sommet confirmé 160 ms plus tard.
 - `pitch.js` : hauteur de la voix en flux (méthode de McLeod après un passe-bas à 1 kHz), une mesure toutes les 10 ms.
-- `chant.js` : chant d'intervalles. Choix des intervalles par niveau, jugement de la tenue.
+- `chant.js` : chant. Tirage des intervalles, des notes sur la portée et des accords ; chiffrages ; jugement de la tenue.
+- `portee.js` : dessin des portées, des notes, des altérations.
+- `piano.js`, `piano/` : onze notes de piano enregistrées (voir NOTICE), transposées d'un demi-ton et demi au plus.
 - `worklet-2.js` : relais du micro (`worklet.js` reste servi pour une page ouverte avant la mise à jour).
 - `model.json` : modèle vocal entraîné sur la voix d'Hugo (séance de mesure du 25 novembre 2026). Sept syllabes et une classe de rejet.
   Depuis la version 3, il porte aussi un filtre « syllabe dite ou autre son » : un second petit réseau sur la même image de 300 ms, qui laisse intact le modèle des syllabes.
@@ -45,20 +61,32 @@ L'app revalide ses fichiers à chaque ouverture : la nouvelle version arrive au 
 - À la voix, une syllabe nette qui n'est pas la note attendue colore la note en rouge tout de suite. La syllabe suivante tranche : la bonne note la valide (correction), la note d'après la confirme fausse. Un silence de 2,5 s (1,2 s sur la dernière note) la confirme aussi.
 - Une note que le micro n'a pas entendue reste noire ; elle ne compte ni juste ni fausse.
 
-## Chant d'intervalles
+## Chant
 
-Trois temps, sans chronomètre. Écoute : la première note sonne (elle est bleue pendant ce temps) ; toucher la portée la rejoue.
-Vise : on cherche la seconde note ; sous la portée, la courbe bleue montre la voix, la ligne du milieu est la note à chanter,
-les traits fins sont les demi-tons. Tiens : la note compte après 300 ms dans la bande de ±50 cents, à l'octave près.
-Les 150 premières millisecondes d'une émission ne sont pas jugées, la médiane absorbe le vibrato, un glissando qui traverse
-la bande ne compte pas. Rien n'est compté faux.
+Trois temps, sans chronomètre. Écoute : la note de départ sonne au piano ; toucher l'exercice la rejoue.
+Vise : on cherche la note ; la courbe bleue montre la voix, la ligne du milieu est la note à chanter, les traits fins sont les demi-tons.
+Tiens : la note compte après la tenue réglée (0,7 s au départ, de 0,3 à 2 s) dans la bande de ±50 cents, à l'octave près ; la bande
+fonce pendant la tenue. Les 150 premières millisecondes d'une émission ne sont pas jugées, la médiane absorbe le vibrato,
+un glissando qui traverse la bande ne compte pas. Rien n'est compté faux. L'exercice suivant arrive seul.
 
-- Niveau 1 : secondes et tierces majeures, quintes, octaves, en montant. Niveau 2 : les mêmes et la quarte, dans les deux sens.
-  Niveau 3 : tous les intervalles entre notes naturelles. Dix intervalles par séance.
-- Une séance gardée : `mode: 'chant'`, niveau, bande et tenue, et par intervalle trouvé
-  `[position de la référence, position de la cible, temps pour trouver (ms), écart médian (cents), réécoutes]`.
+- Intervalles : le nom de l'intervalle et son sens sont écrits, sans portée. Les onze intervalles, de la seconde mineure à la
+  septième majeure, se cochent un par un, ainsi que montant et descendant. Par défaut on chante d'abord la note de départ.
+- Portée : deux notes écrites en clé de sol, à chanter l'une après l'autre ; la première sonne. Mêmes choix d'intervalles.
+  La première note est naturelle, la seconde porte le bémol ou le dièse que demande l'intervalle.
+- Accords : le chiffrage est écrit, la fondamentale sonne, les notes se chantent de bas en haut. Majeur, mineur, augmenté,
+  diminué, sus4, m7, maj7, 7, m(maj7), 6 ; deux écritures (Cm7 · Cmaj7 ou C–7 · C∆7).
+- Parce que la note est jugée à l'octave près, le sens d'un intervalle n'est pas vérifié.
+- Une séance gardée : `mode` (`intervalles`, `portee`, `accords`), bande et tenue, et par exercice chanté
+  `[ce qui était demandé, temps (ms), écart médian de chaque note (cents), réécoutes]`.
 - Réglages d'essai par l'adresse : `?tol=25` (bande en cents), `?tenue=500` (ms).
 - Précision du suivi de hauteur sur sons de synthèse : moins de 0,2 cent de 73 à 880 Hz.
+
+## Lecture d'intervalles : enregistrement
+
+Dire le nom d'un intervalle demande un modèle vocal qui n'existe pas encore : celui des notes ne connaît que do, ré, mi, fa, sol, la, si.
+L'exercice ouvre pour l'instant un écran d'enregistrement : 44 noms affichés un par un (les onze intervalles, quatre fois chacun,
+dans le désordre), un toutes les 2,5 s. Le fichier partagé à la fin est le son reçu par l'app (WAV, 16 kHz, mono) suivi du bloc
+`sLFG` : instant d'affichage de chaque nom. Rien n'est envoyé nulle part : le fichier ne sort que par le partage.
 
 ## Bruits
 

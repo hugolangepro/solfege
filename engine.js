@@ -333,3 +333,49 @@ export class Follower {
 }
 
 export const SYLLABES = ['do', 'ré', 'mi', 'fa', 'sol', 'la', 'si'];
+
+// Suivi d'une lecture sans fin : le même alignement, sur une fenêtre de notes qui avance avec la lecture.
+// attendu(i) rend la syllabe (0 à 6) de la note d'indice i. Quand `seuil` notes de la fenêtre sont lues, les verdicts des
+// plus anciennes sont figés et la fenêtre repart `garde` notes avant la note en cours.
+export class Suivi {
+  constructor(attendu, { fen = 48, seuil = 24, garde = 8, ...opts } = {}) {
+    this.att = attendu; this.fen = fen; this.seuil = seuil; this.garde = garde; this.opts = opts;
+    this.base = 0; this.fixes = [];
+    this.f = this.fenetre();
+  }
+  fenetre() {
+    const e = [];
+    for (let i = 0; i < this.fen; i++) e.push(this.att(this.base + i));
+    return new Follower(e, this.opts);
+  }
+  avance() {
+    const f = this.f, k = f.best();
+    if (k < this.seuil) return;
+    // État atteint après chaque syllabe le long de la meilleure lecture.
+    const etats = new Array(f.dets.length);
+    let c = k;
+    for (let i = f.back.length - 1; i >= 0; i--) { etats[i] = c; c = f.back[i][c][0]; }
+    // La fenêtre repart `garde` notes en arrière, et les syllabes dites depuis sont rejouées : deux lectures au coude à coude
+    // sur les dernières notes (syllabe sans note, notes répétées) restent toutes les deux en lice.
+    let i0 = etats.length - 1;
+    while (i0 >= 0 && etats[i0] > k - this.garde) i0--;
+    const nb = i0 < 0 ? 0 : etats[i0];
+    if (nb <= 0) return;
+    const v = f.verdicts();
+    for (let i = 0; i < nb; i++) this.fixes.push(v[i] || { v: 'manque' });
+    const dets = f.dets.slice(i0 + 1), ins = f.ins.slice(i0 + 1);
+    this.base += nb; this.f = this.fenetre();
+    dets.forEach((d, i) => this.f.push(d, ins[i] ?? undefined));
+  }
+  push(d, insCost) { this.f.push(d, insCost); this.avance(); }
+  best() { return this.base + this.f.best(); }
+  // Verdicts des notes d'indice a à b − 1 (null : pas encore lue).
+  verdicts(a, b) {
+    const v = this.f.verdicts(), out = [];
+    for (let i = a; i < b; i++) out.push(i < this.base ? this.fixes[i] : (v[i - this.base] ?? null));
+    return out;
+  }
+  tail(k) { return this.f.tail(k).map((q) => ({ ...q, note: q.note === null ? null : q.note + this.base })); }
+  pending(minConf) { const p = this.f.pending(minConf); return p ? { ...p, note: p.note + this.base } : null; }
+  commitPending(minConf) { const r = this.f.commitPending(minConf); if (r) this.avance(); return r; }
+}

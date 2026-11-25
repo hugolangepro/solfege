@@ -1,3 +1,9 @@
 Les contours de la clé de sol, de la clé de fa et de la tête de note (glyphs.js, icons/) proviennent de GNU FreeFont (FreeSerif),
 https://www.gnu.org/software/freefont/, distribuée sous licence GNU GPL version 3 ou ultérieure avec l'exception relative
 à l'incorporation de la police dans un document.
+
+Les notes de piano (piano/*.mp3) proviennent du Salamander Grand Piano d'Alexander Holm (Yamaha C5), distribué sous licence
+Creative Commons Attribution 3.0 (http://creativecommons.org/licenses/by/3.0/), dans la version publiée par le projet Tone.js
+(https://github.com/Tonejs/audio). Elles ont été raccourcies à 2,6 s, mises en mono, égalisées en niveau et réencodées.
+
+Le bémol et le dièse (glyphs.js) proviennent de la même police GNU FreeFont que les clés.

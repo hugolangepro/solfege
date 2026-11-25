@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadModel, Recognizer, Follower, SYLLABES } from '../engine.js';
+import { loadModel, Recognizer, Suivi, SYLLABES } from '../engine.js';
 
 const ici = path.dirname(fileURLToPath(import.meta.url));
 const raw = fs.readFileSync(process.argv[2]);
@@ -23,14 +23,15 @@ const heard = [];
 rec.onCandidate = (c) => { if (c.time >= meta.tStart) heard.push(c); };
 for (let i = 0; i < x.length; i += 160) rec.push(x.subarray(i, Math.min(x.length, i + 160)));
 
-const fol = new Follower(meta.attendu.map((s) => SYLLABES.indexOf(s)));
+const att = meta.attendu.map((s) => SYLLABES.indexOf(s));
+const fol = new Suivi((i) => att[i] ?? 0);
 for (const c of heard) fol.push(c);
-const v = fol.verdicts().map((q) => (q ? q.v : null));
+const v = fol.verdicts(0, fol.best()).map((q) => (q ? q.v : null));
 const memes = heard.length === meta.entendu.length
   && heard.every((c, i) => SYLLABES[c.cls] === meta.entendu[i][1] && Math.abs(c.time * 1000 - meta.entendu[i][0]) <= 25);
 console.log(`app ${meta.app} · ${meta.ua}`);
 console.log(`micro : ${JSON.stringify(meta.micro)} · contexte ${meta.rate} Hz · installée ${meta.installee}`);
-console.log(`attendu  : ${meta.attendu.join(' ')}`);
+console.log(`attendu  : ${meta.attendu.slice(0, meta.verdicts.length).join(' ')}`);
 console.log(`entendu  : ${meta.entendu.map((e) => `${e[1]}(${e[2]})`).join(' ')}`);
 console.log(`verdicts : ${meta.verdicts.map((q) => (q === 'ok' ? '·' : q === 'faux' ? 'F' : q === 'manque' ? '?' : '_')).join('')}`);
 const ms = (q, k) => (q ? `médiane ${(q.med * k).toFixed(1)}, 95 % sous ${(q.p95 * k).toFixed(1)}, max ${(q.max * k).toFixed(1)} ms` : 'non mesuré');

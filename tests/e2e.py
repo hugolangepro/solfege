@@ -25,36 +25,42 @@ WATCH_JS = '''() => { window.__log = [];
     window.__log.push({ t: performance.now(), heard: s.heard.length, reds, texts: document.querySelectorAll('#systems text').length, ellipses: document.querySelectorAll('#systems ellipse').length }); };
   new MutationObserver(snap).observe(document.getElementById('systems'), { childList: true }); }'''
 
-async def run(base, name, seq, viewport, wait_s, shots=True, debug=False, clef=None, wav=None, extra=''):
+async def run(base, name, seq, viewport, wait_s, shots=True, debug=False, clef=None, wav=None, extra='', etendue=None):
     async with async_playwright() as p:
         b = await p.chromium.launch(channel='chrome', args=args_for(wav) if wav else ARGS)
         ctx = await b.new_context(viewport=viewport, device_scale_factor=2, permissions=['microphone'])
+        notes = {'clef': clef or 'sol', 'input': 'voix', 'sol': [-2, 10], 'fa': [-2, 10]}
+        if etendue: notes.update(etendue)
+        await ctx.add_init_script("if (!localStorage.getItem('solfege.prefs')) localStorage.setItem('solfege.prefs', %s)" % json.dumps(json.dumps({'notes': notes})))
         pg = await ctx.new_page()
         errs = []
         pg.on('pageerror', lambda e: errs.append(str(e)))
         pg.on('console', lambda m: errs.append('console: ' + m.text) if m.type == 'error' else None)
         await pg.goto(base + '?seq=' + urllib.parse.quote(','.join(seq)) + ('&debug' if debug else '') + extra)
         await pg.wait_for_timeout(800)
-        if clef: await pg.click(f'#clef button[data-v="{clef}"]')
         if shots: await pg.screenshot(path=os.path.join(ICI, f'{name}_accueil.png'))
         await pg.evaluate(WATCH_JS)
-        await pg.click('#go')
+        await pg.click('#liste button[data-exo="notes"]')
         await pg.wait_for_timeout(11000)
         if shots: await pg.screenshot(path=os.path.join(ICI, f'{name}_encours.png'))
         await pg.wait_for_timeout(int(wait_s * 1000) - 11000)
         state = await pg.evaluate('''() => { const s = window.__solfege.session; if (!s) return null;
-            return { over: s.over, rate: s.rate, n: s.N, heard: s.heard.length, tStart: s.tStart, version: window.__solfege.VERSION,
+            return { over: s.over, rate: s.rate, generees: s.notes.length, heard: s.heard.length, tStart: s.tStart, version: window.__solfege.VERSION,
                      raw: s.raw.length, bypass: s.bypass, gateOff: window.__solfege.gateOff, stored: localStorage.getItem('solfege.gate'),
+                     lignes: Array.from(document.querySelectorAll('#systems svg')).map(g => +g.querySelector('path[data-n]').dataset.n / 8),
+                     repere: document.querySelectorAll('#systems polygon').length,
+                     vt: window.__solfege.verdicts().map(q => q && q.time !== undefined ? Math.round(q.time * 1000) : null),
                      v: window.__solfege.verdicts().map(q => q ? q.v + (q.v === 'faux' ? ':' + q.cls : '') : null) }; }''')
         result = await pg.inner_text('#result')
         if shots: await pg.screenshot(path=os.path.join(ICI, f'{name}_fin.png'))
-        stored = await pg.evaluate("() => JSON.parse(localStorage.getItem('solfege.sessions') || '[]')")
         diag = await pg.evaluate(DIAG_JS) if debug else None
-        share_visible = await pg.is_visible('#share')
         log = await pg.evaluate('() => window.__log')
         heard = await pg.evaluate("() => window.__solfege.session ? window.__solfege.session.heard.map(c => [c.cls, +c.conf.toFixed(2), Math.round(c.time * 1000), Math.round(c.delay * 1000), c.early ? 1 : 0]) : []")
+        await pg.click('#quit'); await pg.wait_for_timeout(200)
+        accueil = await pg.is_visible('#home')
+        stored = await pg.evaluate("() => JSON.parse(localStorage.getItem('solfege.sessions') || '[]')")
         await b.close()
-        return state, result, errs, stored, diag, share_visible, log, heard
+        return state, result, errs, stored, diag, accueil, log, heard
 
 def lire_diag(raw):
     assert raw[:4] == b'RIFF' and raw[8:12] == b'WAVE', 'en-tête'
@@ -82,67 +88,63 @@ async def service_worker(base, proc):
         titre = await pg.inner_text('h1')
         modele = await pg.evaluate("() => fetch('model.json').then(r => r.ok && r.json()).then(j => j && j.version).catch(e => 'échec : ' + e.message)")
         msg = await pg.inner_text('#msg')
+        piano = await pg.evaluate("() => fetch('piano/60.mp3').then(r => r.ok && r.arrayBuffer()).then(a => a && a.byteLength).catch(e => 'échec : ' + e.message)")
         await pg.goto(base + '?input=midi'); await pg.wait_for_timeout(800)
-        await pg.click('#go'); await pg.wait_for_timeout(300)
-        n = await pg.evaluate("() => window.__solfege.session && window.__solfege.session.notes.length")
+        await pg.click('#liste button[data-exo="notes"]'); await pg.wait_for_timeout(300)
+        n = await pg.evaluate("() => window.__solfege.session && document.querySelectorAll('#systems path[data-n]').length")
         await b.close()
-        return pris, portee, titre, modele, msg, n, errs
+        return pris, portee, titre, modele, msg, n, piano, errs
 
 async def main():
     phone = {'width': 393, 'height': 852}
+    ok32 = lambda v: sum(x == 'ok' for x in v[:32])
     with serveur() as (base, proc):
-        st, res, errs, stored, diag, share, log, heard = await run(base, 'tel', SEQ, phone, 24)
+        st, res, errs, stored, diag, accueil, log, heard = await run(base, 'tel', SEQ, phone, 24)
         v = st['v'] if st else []
-        print('A. page conforme :', sum(x == 'ok' for x in v), 'justes sur', len(v), '| terminé :', st and st['over'], '| version', st and st['version'], '| entendues', st and st['heard'])
-        print('   résultat affiché :', res.replace('\n', ' / '), '| partage visible hors diagnostic :', share, '| erreurs :', errs)
+        print('A. 32 notes imposées, puis la lecture continue :', ok32(v), 'justes sur 32 | lues en tout', len(v), '| séance toujours en cours :', st and not st['over'], '| version', st and st['version'])
+        print('   portées affichées (rang de la portée dans la lecture, de haut en bas) :', st['lignes'], '| repères :', st['repere'], '| ligne du bas :', repr(res), '| retour à l\'accueil par × :', accueil, '| erreurs :', errs)
         r = stored[-1]
-        print('   séance gardée :', {k: r[k] for k in ('id', 'fmt', 'app', 'mode', 'input', 'n', 'ok', 'faux', 'manque', 'dur', 'rate', 'acc')}, '| notes[:3] =', r['notes'][:3], '| octets :', len(json.dumps(r, separators=(',', ':'))))
+        print('   séance gardée :', {k: r[k] for k in ('id', 'fmt', 'app', 'mode', 'input', 'n', 'ok', 'faux', 'manque', 'dur', 'rate', 'acc', 'etendue')}, '| notes[:3] =', r['notes'][:3], '| séances :', len(stored))
 
         alt = SEQ[:]; alt[5] = 'la' if alt[5] != 'la' else 'mi'; alt[20] = 'do' if alt[20] != 'do' else 'ré'
-        st, res, errs, stored, diag, share, log, heard = await run(base, 'tel_faux', alt, phone, 24)
+        st, res, errs, stored, diag, accueil, log, heard = await run(base, 'tel_faux', alt, phone, 24)
         v = st['v'] if st else []
-        print('B. deux notes changées (cases 5 et 20) :', [(i, x) for i, x in enumerate(v) if x != 'ok'], '|', res.replace('\n', ' / '), '| erreurs :', errs)
-        # à quel moment chaque fausse note est-elle passée au rouge : dès sa propre syllabe, ou seulement à la suivante ?
+        print('B. deux notes changées (cases 5 et 20) :', [(i, x) for i, x in enumerate(v[:32]) if x != 'ok'], '|', repr(res), '| erreurs :', errs)
         for j in (5, 20):
             first = next((e for e in log if j in e['reds']), None)
-            # rang de la syllabe dite pour la note j : la j-ième des syllabes retenues par l'alignement, soit celle qui porte l'instant de la note
-            idx = next((i for i, h in enumerate(heard) if h[2] == stored[-1]['notes'][j][4] + round(st['tStart'] * 1000)), None)
-            print('   note %d : rouge affiché quand %s syllabes étaient entendues ; sa propre syllabe est la n° %s ; son écoulé avant reconnaissance : %s ms' % (
-                j, first and first['heard'], idx is not None and idx + 1, idx is not None and heard[idx][3]))
-        print('   textes sous les notes : %d ; cercles : %d ; syllabes reconnues sans attendre le sommet : %d sur %d' % (
-            max(e['texts'] for e in log), max(e['ellipses'] for e in log), sum(h[4] for h in heard), len(heard)))
+            idx = next((i for i, h in enumerate(heard) if h[2] == st['vt'][j]), None)
+            print('   note %d : passée au rouge quand %s syllabes étaient entendues ; sa propre syllabe est la n° %s' % (j, first and first['heard'], idx is not None and idx + 1))
 
-        st, res, errs, stored, diag, share, log, heard = await run(base, 'mac', SEQ, {'width': 1512, 'height': 900}, 24)
+        st, res, errs, stored, diag, accueil, log, heard = await run(base, 'mac', SEQ, {'width': 1512, 'height': 900}, 24)
         v = st['v'] if st else []
-        print('C. grand écran :', sum(x == 'ok' for x in v), 'justes sur', len(v), '|', res.replace('\n', ' / '), '| erreurs :', errs)
+        print('C. grand écran :', ok32(v), 'justes sur 32 |', repr(res), '| erreurs :', errs)
 
-        st, res, errs, stored, diag, share, log, heard = await run(base, 'diag', SEQ, phone, 24, shots=False, debug=True)
+        st, res, errs, stored, diag, accueil, log, heard = await run(base, 'diag', SEQ, phone, 24, shots=False, debug=True)
         raw = base64.b64decode(diag['b64'])
         chemin = os.path.join(ICI, 'diag_test.wav'); open(chemin, 'wb').write(raw)
         fmt, pcm, meta = lire_diag(raw)
-        print('D. fichier de diagnostic :', diag['name'], diag['type'], len(raw), 'octets | fmt', fmt, '| durée', round(len(pcm) / 16000, 1), 's | niveau efficace', round(float(np.sqrt(np.mean((pcm / 32768.0) ** 2))), 4), '| bouton de partage visible :', share)
-        print('   compte rendu :', {k: meta[k] for k in ('app', 'modele', 'installee', 'rate', 'micro', 'tronque', 'mode')})
-        print('   attendu conforme :', meta['attendu'] == SEQ[:32], '| entendues :', len(meta['entendu']), '| verdicts justes :', sum(x == 'ok' for x in meta['verdicts']))
+        print('D. fichier de diagnostic :', diag['name'], len(raw), 'octets | fmt', fmt, '| durée', round(len(pcm) / 16000, 1), 's')
+        print('   compte rendu :', {k: meta[k] for k in ('app', 'exercice', 'modele', 'rate', 'tronque', 'mode')}, '| attendu conforme :', meta['attendu'][:32] == SEQ[:32], '| entendues :', len(meta['entendu']), '| verdicts justes :', sum(x == 'ok' for x in meta['verdicts']))
         rejeu = subprocess.run(['node', os.path.join(ICI, 'diag.mjs'), chemin], capture_output=True, text=True)
         print('   rejeu hors navigateur :', (rejeu.stdout.strip().splitlines() or [rejeu.stderr.strip()])[-1])
-        ff = subprocess.run(['ffmpeg', '-v', 'error', '-i', chemin, '-f', 'null', '-'], capture_output=True, text=True)
-        print('   lisible par ffmpeg :', ff.returncode == 0 and not ff.stderr.strip())
 
-        st, res, errs, stored, diag, share, log, heard = await run(base, 'piano', SEQ, phone, 19, clef='deux')
+        st, res, errs, stored, diag, accueil, log, heard = await run(base, 'piano', SEQ, phone, 24, clef='deux')
         v = st['v'] if st else []
         r = stored[-1]
-        print('F. système de piano à la voix :', sum(x == 'ok' for x in v), 'justes sur', len(v), '|', res.replace('\n', ' / '), '| mode gardé :', r['mode'], '| clés des 8 premières notes :', [q[0] for q in r['notes'][:8]], '| erreurs :', errs)
+        print('F. système de piano à la voix :', ok32(v), 'justes sur 32 |', repr(res), '| mode gardé :', r['mode'], '| portées affichées :', st['lignes'], '| clés des 8 premières notes :', [q[0] for q in r['notes'][:8]], '| erreurs :', errs)
+
+        st, res, errs, stored, diag, accueil, log, heard = await run(base, 'large', SEQ, phone, 12, clef='deux', etendue={'sol': [-6, 14], 'fa': [-6, 14]})
+        print('G. étendue la plus large, deux clés (voir large_encours.png) : portées', st['lignes'], '| erreurs :', errs)
 
         if os.path.exists(BRUIT):
-            for nom, extra in (('filtre actif', ''), ('filtre retiré', '&tau=0')):
-                st, res, errs, stored, diag, share, log, heard = await run(base, 'bruit', SEQ, phone, 26, shots=False, wav=BRUIT, extra=extra)
-                v = st['v'] if st else []
-                print('G. 30 s de frappe au clavier, sans un mot, %s : %d notes validées, %d fausses, %d syllabes entendues (%d par le modèle seul) ; notes passées au rouge en cours de page : %d | erreurs : %s' % (
-                    nom, sum(x == 'ok' for x in v), sum(bool(x) and x.startswith('faux') for x in v), st['heard'], st['raw'], len({j for e in log for j in e['reds']}), errs))
-        st, res, errs, stored, diag, share, log, heard = await run(base, 'secours', SEQ, phone, 24, shots=False, extra='&tau=1.1')
+            st, res, errs, stored, diag, accueil, log, heard = await run(base, 'bruit', SEQ, phone, 26, shots=False, wav=BRUIT)
+            v = st['v'] if st else []
+            print('H. 30 s de frappe au clavier, sans un mot : %d notes validées, %d fausses, %d syllabes entendues (%d par le modèle seul) | erreurs : %s' % (
+                sum(x == 'ok' for x in v), sum(bool(x) and x.startswith('faux') for x in v), st['heard'], st['raw'], errs))
+        st, res, errs, stored, diag, accueil, log, heard = await run(base, 'secours', SEQ, phone, 24, shots=False, extra='&tau=1.1')
         v = st['v'] if st else []
-        print('H. filtre qui écarterait toute la voix (seuil forcé à 1,1) :', sum(x == 'ok' for x in v), 'justes sur', len(v), '|', res.replace('\n', ' / '), '| filtre coupé :', st['bypass'], '| mémorisé :', st['stored'], '| erreurs :', errs)
+        print('I. filtre qui écarterait toute la voix (seuil forcé à 1,1) :', ok32(v), 'justes sur 32 | filtre coupé :', st['bypass'], '| mémorisé :', st['stored'], '| erreurs :', errs)
 
-        pris, portee, titre, modele, msg, n, errs = await service_worker(base, proc)
-        print('E. service worker : page prise en charge', pris, '| portée', portee.replace(base, '…/solfege/'), '| serveur éteint → titre', repr(titre), '| modèle version', modele, '| message', repr(msg), '| page de', n, 'notes | erreurs :', errs)
+        pris, portee, titre, modele, msg, n, piano, errs = await service_worker(base, proc)
+        print('E. service worker : page prise en charge', pris, '| serveur éteint → titre', repr(titre), '| modèle version', modele, '| piano en cache :', piano, 'octets | message', repr(msg), '| notes affichées au clavier :', n, '| erreurs :', errs)
 asyncio.run(main())

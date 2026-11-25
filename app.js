@@ -1,181 +1,64 @@
-// Solfège : lecture de notes, réponse à la voix ou au clavier MIDI. Interface minimale.
-import { loadModel, Recognizer, Resampler, Follower, SYLLABES } from './engine.js';
-import { GLYPHS } from './glyphs.js';
+// Solfège : lecture de notes et chant, sans fin. Interface minimale.
+import { loadModel, Recognizer, Resampler, Suivi, SYLLABES } from './engine.js';
 import { Pitch } from './pitch.js';
-import { buildIntervals, midiOf, nomIntervalle, Hold, NIVEAUX } from './chant.js';
+import { INTERVALLES, ACCORDS, sensDe, chiffrage, tirerIntervalle, tirerPortee, tirerAccord, midiOf, Hold } from './chant.js';
+import { chargerPiano, jouer } from './piano.js';
+import { PER, P_MIN, P_MAX, CLEFS, INK, DONE, BLUE, SOFT, LINE, r2, noteInfo, metrics, systemSVG, miniPortee, porteeChant } from './portee.js';
 
-const VERSION = '2026-11-25.7';
+const VERSION = '2026-11-25.8';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
 try { if (localStorage.getItem('solfege.debug') === '1') DEBUG = true; } catch (e) { /* stockage indisponible */ }
 const TEST_MIDI = params.get('input') === 'midi';      // tests sans clavier branché
-const N_SYS = 4, N_SYS_PIANO = 3, PER = 8, SS = 191;
+const N_SYS = 4, N_SYS_PIANO = 3;
 const RED_CONF = 0.9;                                  // une syllabe au moins aussi nette colore la note en rouge sans attendre la suivante
-const END_MS = 500, COMMIT_MS = 2500, COMMIT_LAST_MS = 1200;
-// chant : nombre d'intervalles, durée de la note de référence, silence gardé après elle, pause avant l'intervalle suivant, courbe affichée
-const CHANT_N = 10, REF_MS = 1000, REF_TAIL_MS = 250, NEXT_MS = 700, TRACE_S = 3;
-const TOL = +params.get('tol') || 50, TENUE = +params.get('tenue') || 300;     // bande en cents, tenue en ms
-const MAX_SESSIONS = 2000;                             // pages gardées sur l'appareil
-const DIAG_MAX = 16000 * 300;                          // diagnostic : cinq minutes de son au plus
-const INK = '#1C1A17', DONE = 'rgba(28,26,23,0.36)', RED = '#B3261E', BLUE = '#1F4E8C', SOFT = '#6B6457', LINE = 'rgba(28,26,23,0.72)';
-const CLEFS = { sol: { glyph: 'gclef', off: 2, base: 4, nom: 'clé de sol' }, fa: { glyph: 'fclef', off: 4, base: 2, nom: 'clé de fa' } };
-const SEMIS = [0, 2, 4, 5, 7, 9, 11];
+const COMMIT_MS = 2500;                                // silence après lequel une syllabe nette restée sans note compte comme réponse
+const TOURNE = 2;                                      // notes lues sur une portée avant que la portée précédente soit renouvelée
+// chant : durée de la note de référence, silence gardé après elle, pause avant l'exercice suivant, courbe affichée
+const REF_MS = 1200, REF_TAIL_MS = 200, NEXT_MS = 700, TRACE_S = 3;
+const TOL = +params.get('tol') || 50;                  // bande en cents
+const PROMPT_MS = 2500, SERIE = 4;                     // enregistrement : un nom toutes les 2,5 s, chaque nom quatre fois par série
+const MAX_SESSIONS = 2000;                             // séances gardées sur l'appareil
+const DIAG_MAX = 16000 * 300;                          // son gardé : cinq minutes au plus
 
-// ---------- notes ----------
-// p = position sur la portée : 0 sur la ligne du bas, +1 par degré.
-function noteInfo(clef, p) {
-  const d = p + CLEFS[clef].off;                       // degrés au-dessus du do de référence de la clé
-  const cls = ((d % 7) + 7) % 7;
-  const midi = 12 * (CLEFS[clef].base + Math.floor(d / 7) + 1) + SEMIS[cls];
-  return { clef, p, cls, midi };
-}
-
-// « Les deux » : un système de piano, chaque note sur la portée du haut (clé de sol) ou du bas (clé de fa).
-function buildExercise(mode) {
-  const n = (mode === 'deux' ? N_SYS_PIANO : N_SYS) * PER;
-  const forced = params.get('seq');
-  if (forced) {
-    return forced.split(',').slice(0, n).map((t, i) => {
-      const cls = SYLLABES.indexOf(t.trim());
-      const clef = mode === 'fa' || (mode === 'deux' && i % 3 === 1) ? 'fa' : 'sol';
-      return noteInfo(clef, ((cls - CLEFS[clef].off) % 7 + 7) % 7);
-    });
-  }
-  const notes = [];
-  let prev = '';
-  for (let i = 0; i < n; i++) {
-    let clef, p;
-    do {
-      clef = mode === 'deux' ? (Math.random() < 0.5 ? 'sol' : 'fa') : mode;
-      p = -2 + Math.floor(Math.random() * 13);
-    } while (clef + p === prev);
-    prev = clef + p;
-    notes.push(noteInfo(clef, p));
-  }
-  return notes;
-}
-
-// ---------- portée ----------
-const r2 = (v) => Math.round(v * 100) / 100;
-
-// Hauteurs d'une portée, ou d'un système de piano : la place des notes hors portée au-dessus, celle du repère en dessous.
-function metrics(s, grand) {
-  const a = Math.max(6, s * 0.55);                                        // demi-largeur du repère
-  const padTop = Math.round(1.75 * s + 6), padBot = Math.round(1.75 * s + 1.7 * a + 10);
-  const between = grand ? 5 * s : 0;                                      // de la ligne du bas de la clé de sol à la ligne du haut de la clé de fa
-  return { a, padTop, between, H: padTop + 4 * s + (grand ? between + 4 * s : 0) + padBot };
-}
-
-// Accolade d'un système de piano, dans le rectangle (x, y, w, h).
-function bracePath(x, y, w, h) {
-  const P = (px, py) => `${r2(x + px * w)} ${r2(y + py * h)}`;
-  return `M${P(1, 0)}C${P(0.2, 0.05)} ${P(0.9, 0.45)} ${P(0, 0.5)}C${P(0.9, 0.55)} ${P(0.2, 0.95)} ${P(1, 1)}`
-    + `C${P(0.6, 0.92)} ${P(1.3, 0.58)} ${P(0, 0.5)}C${P(1.3, 0.42)} ${P(0.6, 0.08)} ${P(1, 0)}Z`;
-}
-
-// Un système : une portée, ou deux portées réunies par une accolade. Une note validée s'efface en gris, une note fausse
-// passe en rouge, sans autre marque. Une note que le micro n'a pas entendue reste noire.
-function systemSVG(notes, states, W, s, grand) {
-  const { a, padTop, between, H } = metrics(s, grand), k = s / SS;
-  const xs = grand ? Math.round(1.3 * s) : 0;                             // l'accolade tient dans la marge gauche
-  const yb = grand ? { sol: padTop + 4 * s, fa: padTop + 8 * s + between } : { [notes[0].clef]: padTop + 4 * s };
-  const yLow = grand ? yb.fa : yb[notes[0].clef];
-  const x0 = xs + 5.6 * s, xr = W - 1.5 * s, dx = (xr - x0) / (PER - 1);
-  const lw = Math.max(0.9, s / 12);
-  let o = '';
-  for (const clef of Object.keys(yb)) {
-    for (let i = 0; i < 5; i++) o += `<line x1="${xs}" y1="${r2(yb[clef] - i * s)}" x2="${W}" y2="${r2(yb[clef] - i * s)}" stroke="${LINE}" stroke-width="${r2(lw)}"/>`;
-    const g = GLYPHS[CLEFS[clef].glyph];
-    o += `<path d="${g.d}" transform="translate(${r2(xs + 3 - g.left * k)} ${r2(yb[clef])}) scale(${k} ${-k}) translate(0 12)" fill="${INK}"/>`;
-  }
-  if (grand) {
-    const yTop = yb.sol - 4 * s;
-    o += `<line x1="${r2(xs + lw / 2)}" y1="${r2(yTop - lw / 2)}" x2="${r2(xs + lw / 2)}" y2="${r2(yb.fa + lw / 2)}" stroke="${LINE}" stroke-width="${r2(lw * 1.3)}"/>`;
-    o += `<path d="${bracePath(0, yTop, xs - 0.35 * s, yb.fa - yTop)}" fill="${INK}"/>`;
-  }
-  notes.forEach((n, i) => {
-    const st = states[i], x = x0 + i * dx, y0 = yb[n.clef], yc = y0 - n.p * s / 2;
-    const col = st.kind === 'faux' ? RED : st.kind === 'ok' ? DONE : INK;
-    const led = [];
-    if (n.p <= -2) for (let q = -2; q >= n.p; q -= 2) led.push(q);
-    if (n.p >= 10) for (let q = 10; q <= n.p; q += 2) led.push(q);
-    for (const q of led) o += `<line x1="${r2(x - 1.02 * s)}" y1="${r2(y0 - q * s / 2)}" x2="${r2(x + 1.02 * s)}" y2="${r2(y0 - q * s / 2)}" stroke="${LINE}" stroke-width="${r2(lw * 1.3)}"/>`;
-    o += `<path data-n="${st.j}" d="${GLYPHS.nhblack.d}" transform="translate(${r2(x - 155 * k)} ${r2(yc + 91 * k)}) scale(${k} ${-k})" fill="${col}"/>`;
-    if (st.cur) {
-      const yt = yLow + 1.75 * s + 4;
-      o += `<polygon points="${r2(x)},${r2(yt)} ${r2(x - a)},${r2(yt + 1.7 * a)} ${r2(x + a)},${r2(yt + 1.7 * a)}" fill="${BLUE}"/>`;
-    }
-  });
-  const label = grand ? `Système de piano, ${notes.length} notes` : `Portée en ${CLEFS[notes[0].clef].nom}, ${notes.length} notes`;
-  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${label}">${o}</svg>`;
-}
-
-// Taille des portées : la plus grande qui laisse tenir tous les systèmes dans la hauteur de l'écran.
-function layout() {
-  const grand = S.mode === 'deux', nSys = Math.ceil(S.N / PER);
-  const cs = getComputedStyle($('page'));
-  const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight), padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-  const W = Math.floor(Math.min(window.innerWidth - padX, 760));
-  const avail = window.innerHeight - padY - 44 - 104 - (DEBUG ? 60 : 0);
-  let s = Math.min(Math.floor(W / 32 * 2) / 2, 20);
-  while (s > 7 && nSys * metrics(s, grand).H + (nSys - 1) * 8 > avail) s -= 0.5;
-  const gap = Math.max(8, Math.min((avail - nSys * metrics(s, grand).H) / Math.max(1, nSys - 1), 2.5 * s));
-  return { W, s, gap: Math.floor(gap), grand };
-}
+// ---------- préférences ----------
+const TOUS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+const prefs = {
+  exo: 'notes', tenue: 700,
+  notes: { clef: 'sol', input: 'voix', sol: [-2, 10], fa: [-2, 10] },
+  intervalles: { iv: TOUS.slice(), montant: true, descendant: true, depart: true },
+  portee: { iv: TOUS.slice(), montant: true, descendant: true },
+  accords: { types: ACCORDS.map((a) => a.id), notation: 'lettres' },
+};
+try {
+  const lu = JSON.parse(localStorage.getItem('solfege.prefs') || '{}') || {};
+  if (typeof lu.clef === 'string') { prefs.notes.clef = lu.clef; if (lu.input) prefs.notes.input = lu.input; }   // préférences d'avant les réglages par exercice
+  for (const k of ['notes', 'intervalles', 'portee', 'accords']) if (lu[k] && typeof lu[k] === 'object') Object.assign(prefs[k], lu[k]);
+  if (typeof lu.tenue === 'number') prefs.tenue = lu.tenue;
+  if (['notes', 'noms', 'intervalles', 'portee', 'accords'].includes(lu.exo)) prefs.exo = lu.exo;
+} catch (e) { /* préférences absentes */ }
+const savePrefs = () => { try { localStorage.setItem('solfege.prefs', JSON.stringify(prefs)); } catch (e) { /* stockage indisponible */ } };
+const tenue = () => +params.get('tenue') || prefs.tenue;
 
 // ---------- état ----------
 let S = null;                       // séance en cours
+let AU = null;                      // son : contexte audio et micro, gardés ouverts tant qu'on reste dans les exercices
+let occupe = false;                 // un démarrage est en cours
 let modelP = null;                  // promesse du modèle vocal
 // Le filtre « syllabe dite ou autre son » peut se tromper sur un micro qu'il ne connaît pas et écarter la voix. L'app le
 // surveille (voir watchGate) ; s'il est pris en défaut sur cet appareil, il reste coupé jusqu'au prochain modèle.
 let gateOff = null;                 // clé du modèle pour lequel le filtre a été coupé, ou null
 try { gateOff = (JSON.parse(localStorage.getItem('solfege.gate') || 'null') || {}).model || null; } catch (e) { /* stockage indisponible */ }
 const gateKey = (m) => (m.gate ? `${m.version}:${m.gate.trained}:${m.gate.tau}` : '');
-const prefs = { clef: 'sol', input: 'voix', exo: 'lecture', niveau: '0' };
-try { Object.assign(prefs, JSON.parse(localStorage.getItem('solfege.prefs') || '{}')); } catch (e) { /* préférences absentes */ }
-
-function setChoice(groupId, value) {
-  for (const b of $(groupId).querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.v === value));
-}
-function wireChoice(groupId, key, onChange) {
-  $(groupId).addEventListener('click', (e) => {
-    const b = e.target.closest('button');
-    if (!b) return;
-    prefs[key] = b.dataset.v; setChoice(groupId, prefs[key]);
-    try { localStorage.setItem('solfege.prefs', JSON.stringify(prefs)); } catch (err) { /* stockage indisponible */ }
-    if (onChange) onChange(prefs[key]);
-  });
-  setChoice(groupId, prefs[key]);
-}
 const say = (t) => { $('msg').textContent = t; };
+const nouvelId = (at) => at + '-' + Math.random().toString(36).slice(2, 8);
+const maj = (t) => t.charAt(0).toUpperCase() + t.slice(1);
 
-function verdicts() {
-  if (!S || S.kind === 'chant') return [];
-  return S.input === 'midi' ? S.v : S.follower.verdicts();
-}
-function render() {
-  if (!S) return;
-  if (S.kind === 'chant') { renderChant(); return; }
-  const t0 = performance.now();
-  const { W, s, gap, grand } = layout(), v = verdicts();
-  // Note en cours, et syllabe nette qui ne lui correspond pas : la note passe au rouge tout de suite. La syllabe suivante
-  // tranche : une correction la valide, la note d'après la confirme fausse.
-  const k = S.over ? -1 : S.input === 'midi' ? S.k : S.follower.best();
-  const pend = !S.over && S.input === 'voix' ? S.follower.pending(RED_CONF) : null;
-  const cur = pend ? k + 1 : k;
-  $('systems').style.gap = gap + 'px';
-  let html = '';
-  for (let sys = 0; sys * PER < S.notes.length; sys++) {
-    const notes = S.notes.slice(sys * PER, sys * PER + PER);
-    const states = notes.map((n, i) => {
-      const j = sys * PER + i, q = v[j];
-      return { j, kind: q ? q.v : pend && j === k ? 'faux' : 'next', cur: j === cur };
-    });
-    html += systemSVG(notes, states, W, s, grand);
-  }
-  $('systems').innerHTML = html;
-  if (S.draw) S.draw.push(performance.now() - t0);
+function show(view) {
+  $('home').hidden = view !== 'home';
+  $('page').hidden = view !== 'page';
+  if (view !== 'page') $('sheet').hidden = true;
 }
 
 // ---------- son ----------
@@ -208,111 +91,228 @@ async function openMic(ctx, onSamples) {
   } catch (e) { release(); throw e; }
 }
 
-function show(view) {
-  $('home').hidden = view !== 'home';
-  $('page').hidden = view !== 'page';
+// Le micro reste ouvert d'un exercice à l'autre : changer d'exercice ne redemande rien. `sink` reçoit le son à 16 kHz.
+async function ouvrirSon() {
+  if (AU && AU.ctx.state !== 'closed') {
+    if (AU.ctx.state !== 'running') AU.ctx.resume().catch(() => {});
+    return AU;
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC({ latencyHint: 'interactive' });
+  ctx.resume().catch(() => {});                           // dans le geste de l'utilisateur
+  // iPhone : micro et haut-parleur ensemble, sans traitement de la voix
+  try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch (e) { /* réglage absent */ }
+  const au = { ctx, rs: new Resampler(ctx.sampleRate), sink: null, got: false, lag: null };
+  try {
+    au.mic = await openMic(ctx, (x, t) => {
+      au.got = true;
+      // diagnostic : temps mis par un bloc de son pour aller du micro (horloge audio) jusqu'ici
+      if (au.lag && t !== undefined && au.lag.length < 60000) au.lag.push(Math.max(0, ctx.currentTime - t));
+      const y = au.rs.process(x);
+      if (au.sink) au.sink(y);
+    });
+  } catch (e) { try { ctx.close(); } catch (err) { /* déjà fermé */ } throw e; }
+  AU = au;
+  return au;
+}
+function fermerSon() {
+  if (!AU) return;
+  AU.sink = null; AU.mic.stop(); AU = null;
+}
+// En diagnostic, le son reçu est gardé (16 bits) ; le moteur écoute exactement ces échantillons : le rejeu hors de l'app donne le même résultat.
+function garder(s, y) {
+  if (s.pcmN >= DIAG_MAX) return y;
+  const q = Int16Array.from(y, (v) => Math.max(-32768, Math.min(32767, Math.round(v * 32768))));
+  s.pcm.push(q); s.pcmN += q.length;
+  return Float32Array.from(q, (v) => v / 32768);
 }
 
-async function start() {
-  say('');
-  $('go').disabled = true;
-  const input = TEST_MIDI || (prefs.input === 'midi' && midi.inputs().length) ? 'midi' : 'voix';
-  const notes = buildExercise(prefs.clef);
-  const base = { input, mode: prefs.clef, notes, N: notes.length, over: false, at: new Date().toISOString() };
-  let ctx = null;
+// ---------- démarrage et arrêt d'un exercice ----------
+async function lancer(exo) {
+  if (occupe) return;
+  occupe = true; say('');
   try {
-    if (input === 'midi') {
-      S = { ...base, v: new Array(notes.length).fill(null), k: 0, t0: performance.now() };
-    } else {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      ctx = new AC({ latencyHint: 'interactive' });
-      ctx.resume().catch(() => {});                       // dans le geste de l'utilisateur
-      const model = await modelP;
-      const rs = new Resampler(ctx.sampleRate), rec = new Recognizer(model, params.has('tau') ? { tau: +params.get('tau') } : {});
-      const expected = notes.map((n) => n.cls), bypass = !model.gate || gateOff === gateKey(model);
-      S = { ...base, follower: new Follower(expected), rec, ctx, model, heard: [], pcm: [], pcmN: 0, level: 0, rate: ctx.sampleRate, tStart: Infinity,
-        // sans filtre : les détections du modèle des syllabes seul et leur propre suivi, pour surveiller le filtre
-        raw: [], shadow: bypass ? null : new Follower(expected), bypass,
-        lag: DEBUG ? [] : null, draw: DEBUG ? [] : null };
+    arreter();
+    prefs.exo = exo; savePrefs();
+    if (exo === 'notes') await startNotes(); else if (exo === 'noms') await startEnreg(); else await startChant(exo);
+    $('result').textContent = ''; delete $('result').dataset.alerte;
+    $('debug').hidden = !DEBUG; $('debug').textContent = '';
+    show('page'); render(); ligne(); levelLoop();
+    if (navigator.wakeLock && !verrou) navigator.wakeLock.request('screen').then((l) => { verrou = l; }).catch(() => {});
+    if (S && S.input !== 'midi') {
+      // aucun son reçu après trois secondes : le contexte audio attend un geste, une touche sur la page le relance
       const mine = S;
-      rec.onLevel = (rms) => { mine.level = rms; };
-      rec.onCandidate = (c) => { if (!mine.bypass) onCandidate(mine, c); };
-      rec.onRaw = (c) => onRaw(mine, c);
-      const audio = await openMic(ctx, (x, t) => {
-        if (mine.over) return;
-        // diagnostic : temps mis par un bloc de son pour aller du micro (horloge audio) jusqu'ici
-        if (mine.lag && t !== undefined && mine.lag.length < 60000) mine.lag.push(Math.max(0, ctx.currentTime - t));
-        if (!mine.got) { mine.got = true; if (S === mine && $('result').dataset.alerte) { $('result').textContent = ''; delete $('result').dataset.alerte; } }
-        let y = rs.process(x);
-        if (DEBUG && mine.pcmN < DIAG_MAX) {
-          // en diagnostic, le moteur écoute exactement les échantillons gardés pour le fichier : le rejeu hors de l'app donne le même résultat
-          const q = Int16Array.from(y, (v) => Math.max(-32768, Math.min(32767, Math.round(v * 32768))));
-          mine.pcm.push(q); mine.pcmN += q.length;
-          y = Float32Array.from(q, (v) => v / 32768);
-        }
-        rec.push(y);
-      });
-      // séance quittée ou relancée pendant l'ouverture du micro : on le referme et on s'arrête là
-      if (S !== mine || mine.over) { audio.stop(); $('go').disabled = false; return; }
-      S.audio = audio;
-      S.tStart = rec.time;                                 // les syllabes dites avant l'affichage ne comptent pas
+      setTimeout(() => {
+        if (S !== mine || !AU || AU.got) return;
+        $('result').textContent = 'Le micro ne répond pas. Touche la page.'; $('result').dataset.alerte = '1';
+      }, 3000);
     }
   } catch (e) {
-    S = null; $('go').disabled = false;
-    if (ctx) { try { ctx.close(); } catch (err) { /* déjà fermé */ } }
+    S = null; fermerSon(); show('home');
     say(e && e.name === 'NotAllowedError'
       ? 'Micro refusé. Autorise le micro pour ce site dans les réglages du navigateur, puis recommence.'
       : 'Démarrage impossible : ' + (e && e.message ? e.message : e));
+  } finally { occupe = false; }
+}
+let verrou = null;
+// Fin de la séance en cours : elle est enregistrée, le micro reste ouvert.
+function arreter() {
+  if (!S) return;
+  const s = S;
+  s.over = true; clearTimeout(s.commitT); clearTimeout(s.nextT); clearTimeout(s.promptT);
+  if (AU) AU.sink = null;
+  sauver(s);
+  S = null;
+}
+function quitter() {
+  arreter(); fermerSon();
+  if (verrou) { try { verrou.release(); } catch (e) { /* déjà libéré */ } verrou = null; }
+  $('systems').className = ''; $('systems').innerHTML = '';
+  show('home');
+}
+
+// ---------- lecture de notes, sans fin ----------
+// Les notes sont tirées au fur et à mesure, dans l'étendue choisie pour chaque clé ; jamais deux fois de suite la même.
+function noteAt(s, i) {
+  while (s.notes.length <= i) {
+    const j = s.notes.length, prev = s.notes[j - 1];
+    if (s.forced && j < s.forced.length) { s.notes.push(s.forced[j]); continue; }
+    let clef, p;
+    do {
+      clef = s.clefs.length > 1 ? (Math.random() < 0.5 ? 'sol' : 'fa') : s.clefs[0];
+      const [lo, hi] = s.et[clef];
+      p = lo + Math.floor(Math.random() * (hi - lo + 1));
+    } while (prev && prev.clef === clef && prev.p === p);
+    s.notes.push(noteInfo(clef, p));
+  }
+  return s.notes[i];
+}
+
+async function startNotes() {
+  const r = prefs.notes, input = TEST_MIDI || (r.input === 'midi' && midi.inputs().length) ? 'midi' : 'voix';
+  const clefs = r.clef === 'deux' ? ['sol', 'fa'] : [r.clef === 'fa' ? 'fa' : 'sol'];
+  const at = new Date().toISOString();
+  // ?seq= impose les premières notes (tests)
+  const forced = params.get('seq') ? params.get('seq').split(',').map((t, i) => {
+    const cls = SYLLABES.indexOf(t.trim()), clef = clefs.length > 1 ? (i % 3 === 1 ? 'fa' : 'sol') : clefs[0];
+    return noteInfo(clef, ((cls - CLEFS[clef].off) % 7 + 7) % 7);
+  }) : null;
+  const base = { kind: 'notes', exo: 'notes', input, mode: r.clef, clefs, et: { sol: r.sol.slice(), fa: r.fa.slice() }, notes: [], forced,
+    over: false, pause: false, at, id: nouvelId(at), rec0: 0, saved: 0 };
+  if (input === 'midi') {
+    fermerSon();
+    S = { ...base, v: [], k: 0, t0: performance.now() };
     return;
   }
-  $('result').textContent = ''; delete $('result').dataset.alerte; $('after').hidden = true; $('share').hidden = true;
-  $('debug').hidden = !DEBUG; $('debug').textContent = '';
-  show('page'); render(); levelLoop();
-  if (navigator.wakeLock) navigator.wakeLock.request('screen').then((l) => { if (S) S.lock = l; }).catch(() => {});
-  if (input === 'voix') {
-    // aucun son reçu après trois secondes : le contexte audio attend un geste, une touche sur la page le relance
-    const mine = S;
-    setTimeout(() => {
-      if (S !== mine || mine.over || mine.got) return;
-      $('result').textContent = 'Le micro ne répond pas. Touche la page.'; $('result').dataset.alerte = '1';
-    }, 3000);
+  const au = await ouvrirSon(), model = await modelP;
+  const rec = new Recognizer(model, params.has('tau') ? { tau: +params.get('tau') } : {});
+  const bypass = !model.gate || gateOff === gateKey(model);
+  const s = { ...base, rec, model, heard: [], raw: [], bypass, pcm: [], pcmN: 0, level: 0, rate: au.ctx.sampleRate, tStart: 0, draw: DEBUG ? [] : null };
+  s.suivi = new Suivi((i) => noteAt(s, i).cls);
+  // sans filtre : les détections du modèle des syllabes seul et leur propre suivi, pour surveiller le filtre
+  s.shadow = bypass ? null : new Suivi((i) => noteAt(s, i).cls);
+  rec.onLevel = (rms) => { s.level = rms; };
+  rec.onCandidate = (c) => { if (!s.bypass) onCandidate(s, c); };
+  rec.onRaw = (c) => onRaw(s, c);
+  au.lag = DEBUG ? [] : null;
+  S = s;
+  au.sink = (y) => { if (!s.over) rec.push(DEBUG ? garder(s, y) : y); };
+}
+
+const lus = (s) => (s.input === 'midi' ? s.k : s.suivi.best());
+const verdictsDe = (s, a, b) => (s.input === 'midi' ? Array.from({ length: b - a }, (_, i) => s.v[a + i] ?? null) : s.suivi.verdicts(a, b));
+function verdicts() { return S && S.kind === 'notes' ? verdictsDe(S, 0, lus(S)) : []; }
+
+// Taille des portées : la plus grande qui laisse tenir tous les systèmes dans la hauteur de l'écran.
+function layout() {
+  const nSys = S.clefs.length > 1 ? N_SYS_PIANO : N_SYS;
+  const cs = getComputedStyle($('page'));
+  const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight), padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  const W = Math.floor(Math.min(window.innerWidth - padX, 760));
+  const avail = window.innerHeight - padY - 44 - 52 - (DEBUG ? 60 : 0);
+  const H = (s) => metrics(s, S.clefs, S.et).H;
+  let s = Math.min(Math.floor(W / 32 * 2) / 2, 20);
+  while (s > 7 && nSys * H(s) + (nSys - 1) * 8 > avail) s -= 0.5;
+  const gap = Math.max(8, Math.min((avail - nSys * H(s)) / Math.max(1, nSys - 1), 3.5 * s));
+  return { W, s, gap: Math.floor(gap), nSys };
+}
+
+// La page ne s'arrête jamais : les portées gardent leur place, et dès que deux notes sont lues sur une portée,
+// la portée précédente est remplacée par la suite. Après la dernière portée, la lecture reprend en haut.
+function render() {
+  if (!S) return;
+  if (S.kind === 'chant') { renderChant(); return; }
+  if (S.kind === 'enreg') { renderEnreg(); return; }
+  const t0 = performance.now();
+  const { W, s, gap, nSys } = layout(), voix = S.input === 'voix';
+  // Note en cours, et syllabe nette qui ne lui correspond pas : la note passe au rouge tout de suite. La syllabe suivante
+  // tranche : une correction la valide, la note d'après la confirme fausse.
+  const k = lus(S), pend = voix ? S.suivi.pending(RED_CONF) : null, cur = pend ? k + 1 : k;
+  const L = Math.floor(cur / PER), first = cur % PER < TOURNE && L > 0 ? L - 1 : L;
+  const a = first * PER, b = (first + nSys) * PER;
+  noteAt(S, b - 1);
+  const v = verdictsDe(S, a, b), html = new Array(nSys);
+  for (let l = first; l < first + nSys; l++) {
+    const notes = S.notes.slice(l * PER, l * PER + PER);
+    const states = notes.map((n, i) => {
+      const j = l * PER + i, q = v[j - a];
+      return { j, kind: q ? q.v : pend && j === k ? 'faux' : 'next', cur: j === cur };
+    });
+    html[l % nSys] = systemSVG(notes, states, W, s, S.clefs, S.et);
   }
-  $('go').disabled = false;
+  $('systems').style.gap = gap + 'px';
+  $('systems').innerHTML = html.join('');
+  if (S.draw && S.draw.length < 60000) S.draw.push(performance.now() - t0);
+}
+
+// Cadence et justesse sur les 32 dernières notes lues.
+function mesure(v) {
+  const rep = v.filter((q) => q && q.time !== undefined), n = rep.length;
+  const ok = rep.filter((q) => q.v === 'ok').length, faux = n - ok, manque = v.filter((q) => q && q.v === 'manque').length;
+  // Durée de lecture : l'intervalle moyen entre la première et la dernière réponse, compté une fois par note lue.
+  const dur = n > 1 ? Math.max(0.5, (rep[n - 1].time - rep[0].time) * n / (n - 1)) : 0.5;
+  return { n, ok, faux, manque, dur, rate: Math.round(60 * ok / dur), acc: n ? Math.round(100 * ok / n) : 0 };
+}
+function ligne() {
+  if (!S) return;
+  if ($('result').dataset.alerte) { if (!AU || !AU.got) return; delete $('result').dataset.alerte; }
+  let t = '';
+  if (S.kind === 'notes') {
+    const k = lus(S), m = mesure(verdictsDe(S, Math.max(0, k - 32), k));
+    if (m.n >= 8) t = `${m.rate} notes justes par minute · ${m.acc} %`;
+  } else if (S.kind === 'chant' && S.n) {
+    t = `${S.n} ${S.exo === 'accords' ? 'accord' : 'intervalle'}${S.n > 1 ? 's' : ''}`;
+  }
+  $('result').textContent = t;
 }
 
 function onCandidate(sess, c) {
-  if (sess !== S || S.over || c.time < S.tStart) return;
+  if (sess !== S || S.over || S.pause || c.time < S.tStart) return;
   c.delay = S.rec.clock - c.time;                        // son écoulé depuis l'ancre de la syllabe au moment où elle est reconnue
-  S.heard.push(c); S.follower.push(c);
+  S.heard.push(c); S.suivi.push(c);
   afterPush();
 }
 
 function afterPush() {
-  render(); debugLine();
+  render(); ligne(); debugLine(); jalon(S);
   clearTimeout(S.commitT);
-  const k = S.follower.best();
-  if (k >= S.N) {
-    // dernière note lue : on laisse une demi-seconde à une éventuelle correction, sans repousser la fin si d'autres sons arrivent
-    if (!S.endT) S.endT = setTimeout(() => finish(), END_MS);
-  } else {
-    clearTimeout(S.endT); S.endT = null;
-    // une syllabe nette restée sans note compte comme réponse après un silence, plus court sur la dernière note de la page
-    S.commitT = setTimeout(() => {
-      if (!S || S.over) return;
-      if (S.follower.commitPending(RED_CONF)) { render(); if (S.follower.best() >= S.N) finish(); }
-    }, k === S.N - 1 ? COMMIT_LAST_MS : COMMIT_MS);
-  }
+  // une syllabe nette restée sans note compte comme réponse après un silence
+  const mine = S;
+  S.commitT = setTimeout(() => {
+    if (S !== mine || S.over || S.pause) return;
+    if (S.suivi.commitPending(RED_CONF)) { render(); ligne(); }
+  }, COMMIT_MS);
 }
 
 // Détection du modèle des syllabes seul, avant le filtre.
 function onRaw(sess, c) {
-  if (sess !== S || S.over || c.time < S.tStart) return;
+  if (sess !== S || S.over || S.pause || c.time < S.tStart) return;
   if (S.bypass) { onCandidate(sess, c); return; }        // filtre coupé : tout passe
   c.delay = S.rec.clock - c.time;
   S.raw.push(c); S.shadow.push(c);
   if (watchGate()) {
     // Le filtre écartait la voix : le suivi sans filtre devient celui de la page, et le filtre reste coupé sur cet appareil.
-    S.bypass = true; S.follower = S.shadow; S.heard = S.raw; S.shadow = null;
+    S.bypass = true; S.suivi = S.shadow; S.heard = S.raw; S.shadow = null;
     gateOff = gateKey(S.model);
     try { localStorage.setItem('solfege.gate', JSON.stringify({ model: gateOff, at: new Date().toISOString() })); } catch (e) { /* stockage indisponible */ }
     afterPush();
@@ -332,26 +332,30 @@ function watchGate() {
 }
 
 function onMidiNote(note) {
-  if (!S || S.over || S.input !== 'midi') return;
-  const n = S.notes[S.k];
+  if (!S || S.over || S.pause || S.kind !== 'notes' || S.input !== 'midi') return;
+  const n = noteAt(S, S.k);
   S.v[S.k] = { v: note === n.midi ? 'ok' : 'faux', midi: note, time: (performance.now() - S.t0) / 1000 };
   S.k += 1;
-  render();
-  if (S.k >= S.N) finish();
+  render(); ligne(); jalon(S);
 }
 
 function levelLoop() {
-  if (!S || S.over || S.input === 'midi') { $('mic').style.opacity = S && S.input === 'midi' ? '0' : '0.15'; return; }
-  const l = Math.min(1, S.level * 14);
-  $('mic').style.opacity = String(0.15 + 0.85 * l);
-  $('mic').style.transform = `scale(${0.6 + 0.6 * l})`;
-  requestAnimationFrame(levelLoop);
+  const mine = S;
+  const tick = () => {
+    if (S !== mine || !mine || mine.over) return;
+    if (mine.input === 'midi') { $('mic').style.opacity = '0'; return; }
+    const l = Math.min(1, (mine.level || 0) * 14);
+    $('mic').style.opacity = String(0.15 + 0.85 * l);
+    $('mic').style.transform = `scale(${0.6 + 0.6 * l})`;
+    requestAnimationFrame(tick);
+  };
+  tick();
 }
 
 function debugLine() {
-  if (!DEBUG || !S || S.input !== 'voix') return;
+  if (!DEBUG || !S || S.kind !== 'notes' || S.input !== 'voix') return;
   const recent = S.heard.slice(-10), last = recent.map((c) => `${SYLLABES[c.cls]} ${c.conf.toFixed(2)}`).join(', ');
-  const q = stats(S.lag), d = stats(S.draw);
+  const q = stats(AU && AU.lag), d = stats(S.draw);
   const filtre = !S.model.gate ? 'absent' : S.bypass ? 'coupé' : `actif, ${S.raw.length - S.heard.length} écartées`;
   $('debug').textContent = `v${VERSION} · ${S.rate} Hz · niveau ${S.level.toFixed(3)} · filtre ${filtre} · précoces ${recent.filter((c) => c.early).length}/${recent.length}`
     + ` · livraison ${q ? Math.round(q.med * 1000) : '?'} ms · dessin ${d ? d.med.toFixed(1) : '?'} ms · entendu : ${last}`;
@@ -364,45 +368,41 @@ function stats(a) {
   return { n: b.length, med: b[b.length >> 1], p95: b[Math.floor(b.length * 0.95)], max: b[b.length - 1] };
 }
 
-function finish() {
-  if (!S || S.over) return;
-  if (S.kind === 'chant') { finishChant(); return; }
-  S.over = true;
-  clearTimeout(S.commitT); clearTimeout(S.endT);
-  if (S.audio) S.audio.stop();
-  if (S.lock) { try { S.lock.release(); } catch (e) { /* déjà libéré */ } }
-  const v = verdicts();
-  const ok = v.filter((q) => q && q.v === 'ok').length, faux = v.filter((q) => q && q.v === 'faux').length;
-  const answered = v.filter((q) => q && q.time !== undefined);
-  if (!answered.length) { S = null; show('home'); return; }
-  const t0 = S.input === 'midi' ? 0 : S.tStart;
-  // Durée de lecture : l'intervalle moyen entre la première et la dernière réponse, compté une fois par note lue.
-  // Le temps de réaction avant la première note n'entre pas dans la cadence.
-  const iA = v.findIndex((q) => q && q.time !== undefined), iB = v.findLastIndex((q) => q && q.time !== undefined);
-  const dur = iB > iA ? Math.max(0.5, (v[iB].time - v[iA].time) * (iB - iA + 1) / (iB - iA)) : Math.max(0.5, v[iB].time - t0);
-  const lues = v.filter(Boolean).length, manque = lues - ok - faux;
-  const rate = Math.round(60 * ok / dur), acc = ok + faux ? Math.round(100 * ok / (ok + faux)) : 0;
-  let html = `${rate} notes justes par minute · ${acc} %`;
-  if (manque) html += `<small>${manque} ${manque > 1 ? 'notes non entendues' : 'note non entendue'}</small>`;
-  $('result').innerHTML = html;
-  $('after').hidden = false;
-  render();
-  $('share').hidden = !(DEBUG && S.input === 'voix');
-  // Une note = [clé (0 sol, 1 fa), position sur la portée, verdict (1 juste, 0 faux, -1 non entendue, null non lue),
-  //             réponse (syllabe 0 à 6 à la voix, numéro MIDI au clavier), instant en ms depuis le début de la page]
-  const CODE = { ok: 1, faux: 0, manque: -1 };
-  // mode : 'sol', 'fa', ou 'piano' pour le système à deux portées
-  saveSession({ id: S.at + '-' + Math.random().toString(36).slice(2, 8), fmt: 2, app: VERSION, at: S.at, mode: S.mode === 'deux' ? 'piano' : S.mode, input: S.input,
-    n: S.N, ok, faux, manque, dur: Math.round(dur * 10) / 10, rate, acc,
-    notes: S.notes.map((n, i) => {
-      const q = v[i];
-      return [n.clef === 'fa' ? 1 : 0, n.p, q ? CODE[q.v] : null, q ? (q.cls ?? q.midi ?? null) : null, q && q.time !== undefined ? Math.round((q.time - t0) * 1000) : null];
-    }) });
+// ---------- séances gardées ----------
+// La séance en cours est réécrite toutes les 32 notes : rien n'est perdu si la page est fermée. Au-delà de 1024 notes,
+// une nouvelle séance commence.
+function jalon(s) {
+  const k = lus(s);
+  if (k - s.saved < 32) return;
+  s.saved = k; sauver(s);
+  if (k - s.rec0 >= 1024) { s.rec0 = k; s.at = new Date().toISOString(); s.id = nouvelId(s.at); }
 }
-
+function sauver(s) {
+  if (s.kind === 'notes') {
+    const k = lus(s), v = verdictsDe(s, s.rec0, k), m = mesure(v);
+    if (!m.n) return;
+    const t0 = v.find((q) => q && q.time !== undefined).time;
+    // Une note = [clé (0 sol, 1 fa), position sur la portée, verdict (1 juste, 0 faux, -1 non entendue),
+    //             réponse (syllabe 0 à 6 à la voix, numéro MIDI au clavier), instant en ms depuis la première réponse]
+    const CODE = { ok: 1, faux: 0, manque: -1 };
+    // mode : 'sol', 'fa', ou 'piano' pour le système à deux portées
+    saveSession({ id: s.id, fmt: 2, app: VERSION, at: s.at, mode: s.mode === 'deux' ? 'piano' : s.mode, input: s.input,
+      n: v.length, ok: m.ok, faux: m.faux, manque: m.manque, dur: Math.round(m.dur * 10) / 10, rate: m.rate, acc: m.acc,
+      etendue: s.clefs.map((c) => s.et[c]),
+      notes: v.map((q, i) => {
+        const n = s.notes[s.rec0 + i];
+        return [n.clef === 'fa' ? 1 : 0, n.p, q ? CODE[q.v] : null, q ? (q.cls ?? q.midi ?? null) : null, q && q.time !== undefined ? Math.round((q.time - t0) * 1000) : null];
+      }) });
+  } else if (s.kind === 'chant' && s.results.length) {
+    // Un exercice chanté = [ce qui était demandé, temps pour le chanter (ms), écart médian de chaque note (cents), réécoutes]
+    saveSession({ id: s.id, fmt: 2, app: VERSION, at: s.at, mode: s.exo, input: 'chant', n: s.results.length, ok: s.results.length,
+      tol: TOL, tenue: s.hold.holdMs, items: s.results.slice(-500).map((r) => [r.quoi, r.ms, r.cents, r.replays]) });
+  }
+}
 function saveSession(rec) {
   try {
     let all = JSON.parse(localStorage.getItem('solfege.sessions') || '[]');
+    if (all.length && all[all.length - 1].id === rec.id) all.pop();
     all.push(rec);
     all = all.slice(-MAX_SESSIONS);
     try { localStorage.setItem('solfege.sessions', JSON.stringify(all)); }
@@ -410,32 +410,33 @@ function saveSession(rec) {
   } catch (e) { /* stockage indisponible : la séance n'est pas conservée */ }
 }
 
-// Mode diagnostic : un seul fichier à partager. C'est le son de la page tel que l'app l'a reçu (WAV, 16 kHz, mono),
-// suivi d'un bloc « sLFG » qui porte le compte rendu en JSON : notes attendues, syllabes entendues, verdicts, réglages du micro.
+// Un seul fichier à partager : le son tel que l'app l'a reçu (WAV, 16 kHz, mono), suivi d'un bloc « sLFG » qui porte le compte rendu en JSON.
 function diagFile() {
   if (!S || !S.pcm) return null;
-  const meta = S.kind === 'chant' ? {
-    app: VERSION, exercice: 'chant', at: S.at, ua: navigator.userAgent,
+  const commun = { app: VERSION, exercice: S.exo, at: S.at, ua: navigator.userAgent,
     installee: (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true,
-    rate: S.rate, micro: S.audio ? S.audio.info : null, tronque: S.pcmN >= DIAG_MAX, niveau: S.niveau + 1, tol: TOL, tenue: TENUE,
-    intervalles: S.items.map((q) => [q.ref, q.cible, nomIntervalle(q.ref, q.cible)]),
-    // par intervalle trouvé : référence, cible, temps pour trouver (ms), écart médian (cents), réécoutes, niveau et écart de la référence captée par le micro
-    resultats: S.results.map((r) => [r.ref, r.cible, r.ms, r.cents, r.replays, r.refRms, r.refCents]),
-    livraison: stats(S.lag),
-  } : {
-    app: VERSION, modele: S.model ? { version: S.model.version, trained: S.model.trained } : null, at: S.at, ua: navigator.userAgent,
-    installee: (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true,
-    ecran: [window.innerWidth, window.innerHeight, window.devicePixelRatio], rate: S.rate, micro: S.audio ? S.audio.info : null,
-    tStart: S.tStart, tronque: S.pcmN >= DIAG_MAX, mode: S.mode,
-    attendu: S.notes.map((n) => SYLLABES[n.cls]),
-    // par syllabe entendue : instant (ms), syllabe, confiance, son écoulé avant la reconnaissance (ms), 1 si reconnue sans attendre le sommet
-    entendu: S.heard.map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100, Math.round(c.delay * 1000), c.early ? 1 : 0]),
-    livraison: stats(S.lag), dessin: stats(S.draw), clefs: S.notes.map((n) => (n.clef === 'fa' ? 1 : 0)),
-    // filtre « syllabe dite ou autre son » : son seuil, s'il a été coupé, et les détections du modèle seul (pour voir ce qu'il a écarté)
-    filtre: S.model.gate ? { tau: S.rec.tau, coupe: S.bypass, cle: gateKey(S.model) } : null,
-    brut: (S.bypass ? [] : S.raw).map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100]),
-    verdicts: verdicts().map((q) => (q ? q.v : null)),
-  };
+    rate: S.rate, micro: AU ? AU.mic.info : null, tronque: S.pcmN >= DIAG_MAX, livraison: stats(AU && AU.lag) };
+  let meta;
+  if (S.kind === 'enreg') {
+    // par nom affiché : instant d'affichage (ms depuis le début du son), nom
+    meta = { ...commun, periode: PROMPT_MS, phrases: S.journal };
+  } else if (S.kind === 'chant') {
+    meta = { ...commun, tol: TOL, tenue: S.hold.holdMs, reglages: S.r,
+      // par exercice chanté : ce qui était demandé, temps (ms), écart médian de chaque note (cents), réécoutes
+      resultats: S.results.map((r) => [r.quoi, r.ms, r.cents, r.replays]) };
+  } else {
+    const n = Math.min(S.notes.length, S.suivi.best() + 48);
+    meta = { ...commun, modele: { version: S.model.version, trained: S.model.trained },
+      ecran: [window.innerWidth, window.innerHeight, window.devicePixelRatio], tStart: S.tStart, mode: S.mode,
+      attendu: S.notes.slice(0, n).map((q) => SYLLABES[q.cls]), clefs: S.notes.slice(0, n).map((q) => (q.clef === 'fa' ? 1 : 0)),
+      // par syllabe entendue : instant (ms), syllabe, confiance, son écoulé avant la reconnaissance (ms), 1 si reconnue sans attendre le sommet
+      entendu: S.heard.map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100, Math.round(c.delay * 1000), c.early ? 1 : 0]),
+      dessin: stats(S.draw),
+      // filtre « syllabe dite ou autre son » : son seuil, s'il a été coupé, et les détections du modèle seul (pour voir ce qu'il a écarté)
+      filtre: S.model.gate ? { tau: S.rec.tau, coupe: S.bypass, cle: gateKey(S.model) } : null,
+      brut: (S.bypass ? [] : S.raw).map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100]),
+      verdicts: verdicts().map((q) => (q ? q.v : null)) };
+  }
   const json = new TextEncoder().encode(JSON.stringify(meta));
   const n = S.pcm.reduce((a, c) => a + c.length, 0), pad = json.length % 2;
   const buf = new ArrayBuffer(44 + 2 * n + 8 + json.length + pad), b = new DataView(buf);
@@ -445,10 +446,10 @@ function diagFile() {
   let o = 44;
   for (const c of S.pcm) for (let i = 0; i < c.length; i++) { b.setInt16(o, c[i], true); o += 2; }
   w(o, 'sLFG'); b.setUint32(o + 4, json.length, true); new Uint8Array(buf, o + 8, json.length).set(json);
-  return new File([buf], `solfege-${S.at.replace(/[:.]/g, '-')}.wav`, { type: 'audio/wav' });
+  return new File([buf], `solfege-${S.exo}-${S.at.replace(/[:.]/g, '-')}.wav`, { type: 'audio/wav' });
 }
 async function shareAudio() {
-  const f = diagFile();
+  const f = (S && S.kind === 'enreg' && S.fichier) || diagFile();
   if (!f) return;
   try {
     if (navigator.canShare && navigator.canShare({ files: [f] })) { await navigator.share({ files: [f] }); return; }
@@ -457,142 +458,129 @@ async function shareAudio() {
   a.href = URL.createObjectURL(f); a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
 }
 
-// ---------- chant d'intervalles ----------
-// Trois temps, sans chronomètre. Écoute : la note de référence sonne (toucher la portée la rejoue). Vise : tu cherches
-// la seconde note, la courbe bleue montre ta voix sur la portée, rien n'est jugé. Tiens : la note compte après TENUE ms
-// dans la bande de ±TOL cents, à l'octave près.
-function playRef() {
-  const ctx = S.ctx, it = S.items[S.i];
-  // le timbre appartient au contexte audio de la séance : un par séance
-  if (!S.wave) S.wave = ctx.createPeriodicWave(new Float32Array([0, 0, 0, 0, 0, 0, 0]), new Float32Array([0, 1, 0.45, 0.25, 0.12, 0.06, 0.03]));
-  const t0 = ctx.currentTime + 0.03, osc = ctx.createOscillator(), g = ctx.createGain(), d = REF_MS / 1000;
-  osc.setPeriodicWave(S.wave); osc.frequency.value = 440 * 2 ** ((midiOf(it.ref) - 69) / 12);
-  g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(0.3, t0 + 0.012);
-  g.gain.exponentialRampToValueAtTime(0.12, t0 + d * 0.8); g.gain.linearRampToValueAtTime(0, t0 + d);
-  osc.connect(g); g.connect(ctx.destination); osc.start(t0); osc.stop(t0 + d + 0.05);
-  S.phase = 'ecoute'; S.listenFrom = performance.now() + 30 + REF_MS + REF_TAIL_MS;
-  S.refRms = 0; S.refC = []; S.hold.reset();
-  renderChant();
+// ---------- chant : intervalles, portée, accords ----------
+// Trois temps, sans chronomètre. Écoute : la note de départ sonne au piano (toucher l'exercice la rejoue). Vise : tu cherches
+// la note, la courbe bleue montre ta voix autour d'elle, rien n'est jugé faux. Tiens : la note compte après la tenue réglée
+// dans la bande de ±TOL cents, à l'octave près. Puis la note suivante, puis l'exercice suivant, sans fin.
+async function startChant(exo) {
+  const au = await ouvrirSon(), banc = await chargerPiano(au.ctx);
+  const at = new Date().toISOString(), pitch = new Pitch({ win: 1024 });
+  const s = { kind: 'chant', exo, input: 'chant', r: JSON.parse(JSON.stringify(prefs[exo])), banc, pitch, hold: new Hold({ tol: TOL, holdMs: tenue() }),
+    forced: params.get(IMPOSE[exo]) ? params.get(IMPOSE[exo]).split(',') : null, it: null, j: 0, n: 0, track: [], results: [], replays: 0, phase: 'ecoute', part: 0,
+    level: 0, rate: au.ctx.sampleRate, pcm: [], pcmN: 0, over: false, pause: false, at, id: nouvelId(at) };
+  pitch.onPitch = (q) => onPitch(s, q);
+  au.lag = DEBUG ? [] : null;
+  S = s;
+  au.sink = (y) => { if (!s.over) pitch.push(DEBUG ? garder(s, y) : y); };
+  $('systems').className = 'chant';
+  suivant(); chantLoop();
 }
 
-async function startChant() {
-  say('');
-  $('go').disabled = true;
-  const niveau = +prefs.niveau || 0;
-  const forced = params.get('items');
-  const items = forced ? forced.split(',').map((q) => { const [a, b] = q.split(':').map(Number); return { ref: a, cible: b }; }) : buildIntervals(niveau, CHANT_N);
-  let ctx = null;
-  try {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    ctx = new AC({ latencyHint: 'interactive' });
-    ctx.resume().catch(() => {});                         // dans le geste de l'utilisateur
-    // iPhone : micro et haut-parleur ensemble, sans traitement de la voix
-    try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch (e) { /* réglage absent */ }
-    const rs = new Resampler(ctx.sampleRate), pitch = new Pitch({ win: 1024 });
-    S = { kind: 'chant', input: 'chant', mode: 'chant', niveau, items, i: 0, N: items.length, over: false, at: new Date().toISOString(), ctx, pitch,
-      hold: new Hold({ tol: TOL, holdMs: TENUE }), track: [], results: [], replays: 0, phase: 'ecoute', level: 0, rate: ctx.sampleRate,
-      pcm: [], pcmN: 0, lag: DEBUG ? [] : null };
-    const mine = S;
-    pitch.onPitch = (q) => onPitch(mine, q);
-    const audio = await openMic(ctx, (x, t) => {
-      if (mine.over) return;
-      mine.got = true;
-      if (mine.lag && t !== undefined && mine.lag.length < 60000) mine.lag.push(Math.max(0, ctx.currentTime - t));
-      const y = rs.process(x);
-      if (DEBUG && mine.pcmN < DIAG_MAX) { mine.pcm.push(Int16Array.from(y, (v) => Math.max(-32768, Math.min(32767, Math.round(v * 32768))))); mine.pcmN += y.length; }
-      pitch.push(y);
-    });
-    if (S !== mine || mine.over) { audio.stop(); $('go').disabled = false; return; }
-    S.audio = audio;
-  } catch (e) {
-    S = null; $('go').disabled = false;
-    if (ctx) { try { ctx.close(); } catch (err) { /* déjà fermé */ } }
-    say(e && e.name === 'NotAllowedError'
-      ? 'Micro refusé. Autorise le micro pour ce site dans les réglages du navigateur, puis recommence.'
-      : 'Démarrage impossible : ' + (e && e.message ? e.message : e));
-    return;
+// Tire l'exercice suivant. Pour les tests, l'adresse impose les premiers : ?iv=départ:cible (numéros MIDI) pour un intervalle,
+// ?pt=position:position:altération pour la portée, ?ac=type@fondamentale pour un accord.
+const IMPOSE = { intervalles: 'iv', portee: 'pt', accords: 'ac' };
+function suivant() {
+  const s = S, f = s.forced && s.forced.length ? s.forced.shift() : null;
+  let it;
+  if (s.exo === 'intervalles') {
+    let q = tirerIntervalle(s.r, Math.random, s.it);
+    if (f) { const [a, b] = f.split(':').map(Number); q = { st: Math.abs(b - a), sens: Math.sign(b - a), ref: a, cible: b }; }
+    it = { ...q, cibles: s.r.depart ? [q.ref, q.cible] : [q.cible], titre: maj(INTERVALLES[q.st].nom), sous: sensDe(q.st, q.sens), quoi: [q.ref, q.cible] };
+  } else if (s.exo === 'portee') {
+    let q = tirerPortee(s.r, Math.random, s.it);
+    if (f) { const [a, b, alt] = f.split(':').map(Number), m1 = midiOf(a), m2 = midiOf(b) + (alt || 0); q = { st: Math.abs(m2 - m1), sens: Math.sign(m2 - m1), notes: [{ p: a, alt: 0, midi: m1 }, { p: b, alt: alt || 0, midi: m2 }] }; }
+    it = { ...q, ref: q.notes[0].midi, cibles: q.notes.map((n) => n.midi), quoi: q.notes.map((n) => [n.p, n.alt]) };
+  } else {
+    let q = tirerAccord(s.r, Math.random, s.it);
+    if (f) { const [id, rac] = f.split('@'), a = ACCORDS.find((x) => x.id === id); q = { id, racine: +rac, ref: 48 + +rac, tons: a.tons.map((t) => 48 + +rac + t) }; }
+    it = { ...q, cibles: q.tons, titre: chiffrage(q.racine, q.id, s.r.notation), quoi: [q.id, q.racine] };
   }
-  $('result').textContent = ''; delete $('result').dataset.alerte; $('after').hidden = true; $('share').hidden = true;
-  $('debug').hidden = !DEBUG; $('debug').textContent = '';
-  $('systems').classList.add('chant');
-  show('page'); playRef(); levelLoop(); chantLoop();
-  if (navigator.wakeLock) navigator.wakeLock.request('screen').then((l) => { if (S) S.lock = l; }).catch(() => {});
-  $('go').disabled = false;
+  s.it = it; s.j = 0; s.replays = 0; s.tVise = undefined; s.cents = [];
+  playRef();
+}
+function playRef() {
+  const s = S;
+  jouer(AU.ctx, s.banc, s.it.ref, REF_MS / 1000);
+  s.phase = 'ecoute'; s.listenFrom = performance.now() + 30 + REF_MS + REF_TAIL_MS;
+  s.hold.reset(); s.track = []; s.part = 0;
+  renderChant();
 }
 
 // Une mesure de hauteur toutes les 10 ms.
 function onPitch(sess, q) {
   if (sess !== S || S.over) return;
   S.level = q.rms;
-  const it = S.items[S.i], now = performance.now();
+  if (S.pause) return;
+  const now = performance.now();
   if (S.phase === 'ecoute') {
-    // la référence sonne : on n'écoute pas la voix, mais on note ce que le micro capte d'elle (sort-elle bien du haut-parleur ?)
-    if (q.rms > S.refRms) S.refRms = q.rms;
-    if (q.clarity >= 0.8 && q.f0 > 0) S.refC.push(1200 * Math.log2(q.f0 / 440) - 100 * (midiOf(it.ref) - 69));
-    if (now < S.listenFrom) return;
+    if (now < S.listenFrom) return;                      // la référence sonne : on n'écoute pas la voix
     S.phase = 'vise'; S.hold.reset();
     if (S.tVise === undefined) S.tVise = now;
     renderChant();
   }
   if (S.phase !== 'vise') return;
-  const midi = midiOf(it.cible), r = S.hold.push(q, midi);
+  const r = S.hold.push(q, S.it.cibles[S.j]);
+  S.part = r.part;
   S.track.push({ t: q.time, c: r.voiced ? r.cents : null });
   if (S.track.length > 100 * (TRACE_S + 1)) S.track.splice(0, 100);
-  if (DEBUG) $('debug').textContent = `v${VERSION} · ${S.rate} Hz · ${q.f0 ? q.f0.toFixed(1) + ' Hz' : 'pas de note'} · netteté ${q.clarity.toFixed(2)} · écart ${r.cents === null ? '?' : Math.round(r.cents) + ' cents'} · bande ±${TOL}, tenue ${TENUE} ms · référence captée ${S.refRms.toFixed(3)}`;
+  if (DEBUG) $('debug').textContent = `v${VERSION} · ${S.rate} Hz · ${q.f0 ? q.f0.toFixed(1) + ' Hz' : 'pas de note'} · netteté ${q.clarity.toFixed(2)} · écart ${r.cents === null ? '?' : Math.round(r.cents) + ' cents'} · bande ±${TOL}, tenue ${S.hold.holdMs} ms`;
   if (!r.done) return;
-  const c = S.refC.slice().sort((a, b) => a - b), mc = c.length ? c[c.length >> 1] : null;
-  S.results.push({ ref: it.ref, cible: it.cible, ms: Math.round(now - S.tVise), cents: Math.round(r.median), replays: S.replays,
-    refRms: Math.round(S.refRms * 1000) / 1000, refCents: mc === null ? null : Math.round(mc - 1200 * Math.round(mc / 1200)) });
-  S.phase = 'tenu'; renderChant();
-  setTimeout(() => {
-    if (S !== sess || S.over) return;
-    S.i += 1; S.replays = 0; S.tVise = undefined; S.track = [];
-    if (S.i >= S.N) finishChant(); else playRef();
-  }, NEXT_MS);
+  S.cents.push(Math.round(r.median) || 0);
+  S.j += 1; S.hold.reset(); S.track = []; S.part = 0;
+  if (S.j < S.it.cibles.length) { renderChant(); return; }
+  S.n += 1;
+  S.results.push({ quoi: S.it.quoi, ms: Math.round(now - S.tVise), cents: S.cents, replays: S.replays });
+  S.phase = 'tenu'; renderChant(); ligne();
+  if (S.n % 8 === 0) sauver(S);
+  S.nextT = setTimeout(() => { if (S === sess && !S.over && !S.pause) suivant(); }, NEXT_MS);
 }
 
-// La portée porte les deux notes de l'intervalle. Dessous, la courbe de la voix : la ligne du milieu est la note à chanter,
-// la bande bleue ce qu'il faut tenir (±TOL cents), les traits fins marquent les demi-tons au-dessus et au-dessous.
+// En haut : le nom de l'intervalle, le chiffrage de l'accord, ou la portée avec ses notes. Dessous, la courbe de la voix :
+// la ligne du milieu est la note à chanter, la bande bleue ce qu'il faut tenir (±TOL cents), les traits fins marquent les demi-tons.
 const SPAN = 350;                                          // la courbe montre ±350 cents autour de la cible
 function chantLayout() {
   const cs = getComputedStyle($('page'));
   const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
   const W = Math.floor(Math.min(window.innerWidth - padX, 760)), s = Math.min(Math.floor(W / 22 * 2) / 2, 20);
-  const yb = Math.round(3.2 * s) + 4 * s, y0 = yb + Math.round(4.2 * s), hc = Math.round(9 * s);
-  return { W, s, yb, y0, hc, H: y0 + hc + 4, x1: 6.2 * s, x2: 9.8 * s, xa: 0.4 * s, xb: W - 0.8 * s };
+  const yb = Math.round(7.4 * s), y0 = Math.round(11.8 * s), hc = Math.round(9 * s);
+  return { W, s, yb, y0, hc, H: y0 + hc + 4, xa: 0.4 * s, xb: W - 0.8 * s };
 }
 function renderChant() {
-  if (!S || S.kind !== 'chant') return;
-  const { W, s, yb, y0, hc, H, x1, x2, xa, xb } = chantLayout(), k = s / SS, lw = Math.max(0.9, s / 12);
-  const it = S.items[Math.min(S.i, S.N - 1)], y = (p) => yb - p * s / 2, yc = (c) => y0 + hc / 2 - c * (hc / 2) / SPAN;
-  let o = '';
-  for (let i = 0; i < 5; i++) o += `<line x1="0" y1="${r2(yb - i * s)}" x2="${W}" y2="${r2(yb - i * s)}" stroke="${LINE}" stroke-width="${r2(lw)}"/>`;
-  const g = GLYPHS.gclef;
-  o += `<path d="${g.d}" transform="translate(${r2(3 - g.left * k)} ${r2(yb)}) scale(${k} ${-k}) translate(0 12)" fill="${INK}"/>`;
-  const note = (x, p, col, id) => {
-    let q = '';
-    const led = [];
-    if (p <= -2) for (let v = -2; v >= p; v -= 2) led.push(v);
-    if (p >= 10) for (let v = 10; v <= p; v += 2) led.push(v);
-    for (const v of led) q += `<line x1="${r2(x - 1.02 * s)}" y1="${r2(y(v))}" x2="${r2(x + 1.02 * s)}" y2="${r2(y(v))}" stroke="${LINE}" stroke-width="${r2(lw * 1.3)}"/>`;
-    return q + `<path id="${id}" d="${GLYPHS.nhblack.d}" transform="translate(${r2(x - 155 * k)} ${r2(y(p) + 91 * k)}) scale(${k} ${-k})" fill="${col}"/>`;
-  };
-  o += note(x1, it.ref, S.phase === 'ecoute' ? BLUE : INK, 'ref');           // bleue pendant qu'elle sonne
-  o += note(x2, it.cible, S.phase === 'tenu' ? DONE : INK, 'cible');
-  // la courbe
-  o += `<rect x="${r2(xa)}" y="${r2(yc(TOL))}" width="${r2(xb - xa)}" height="${r2(yc(-TOL) - yc(TOL))}" fill="${BLUE}" opacity="0.16"/>`;
+  if (!S || S.kind !== 'chant' || !S.it) return;
+  const { W, s, yb, y0, hc, H, xa, xb } = chantLayout(), it = S.it, n = it.cibles.length;
+  const yc = (c) => y0 + hc / 2 - c * (hc / 2) / SPAN, serif = getComputedStyle(document.body).fontFamily.replace(/"/g, "'");
+  const vise = S.phase === 'vise';
+  let o = '', label;
+  if (S.exo === 'portee') {
+    // la première note est bleue pendant qu'elle sonne ; une note tenue s'efface en gris ; le repère montre la note à chanter
+    const etats = it.notes.map((q, i) => (i < S.j ? DONE : S.phase === 'ecoute' && i === 0 ? BLUE : INK));
+    o += porteeChant(it.notes, etats, vise ? S.j : -1, W, s, yb);
+    label = `Deux notes à chanter : ${INTERVALLES[it.st].nom} ${sensDe(it.st, it.sens)}.`;
+  } else {
+    const accord = S.exo === 'accords';
+    o += `<text id="titre" x="${r2(W / 2)}" y="${r2((accord ? 6.6 : 5.4) * s)}" text-anchor="middle" font-family="${serif}" font-size="${r2((accord ? 4.2 : Math.min(2.4, W / s / 9.5)) * s)}" ${accord ? '' : 'font-style="italic"'} fill="${INK}">${it.titre}</text>`;
+    if (it.sous) o += `<text id="sous" x="${r2(W / 2)}" y="${r2(7.5 * s)}" text-anchor="middle" font-family="${serif}" font-size="${r2(1.2 * s)}" font-style="italic" fill="${SOFT}">${it.sous}</text>`;
+    // une pastille par note à chanter : grise une fois tenue, bleue pour la note en cours
+    if (n > 1) for (let i = 0; i < n; i++) {
+      const x = W / 2 + (i - (n - 1) / 2) * 1.7 * s, fait = i < S.j, cur = vise && i === S.j;
+      o += `<circle data-c="${i}" cx="${r2(x)}" cy="${r2(9.7 * s)}" r="${r2(0.3 * s)}" fill="${fait ? DONE : cur ? BLUE : 'none'}" stroke="${fait ? 'none' : cur ? BLUE : LINE}" stroke-width="1.2"/>`;
+    }
+    label = accord ? `Accord ${it.titre} : ${n} notes à chanter de bas en haut.` : `${it.titre} ${it.sous}.`;
+  }
+  o += `<rect id="bande" x="${r2(xa)}" y="${r2(yc(TOL))}" width="${r2(xb - xa)}" height="${r2(yc(-TOL) - yc(TOL))}" fill="${BLUE}" opacity="0.16"/>`;
   for (const c of [-300, -200, -100, 100, 200, 300]) o += `<line x1="${r2(xa)}" y1="${r2(yc(c))}" x2="${r2(xb)}" y2="${r2(yc(c))}" stroke="${LINE}" stroke-width="0.6" opacity="0.35"/>`;
   o += `<line x1="${r2(xa)}" y1="${r2(yc(0))}" x2="${r2(xb)}" y2="${r2(yc(0))}" stroke="${BLUE}" stroke-width="1" opacity="0.6"/>`;
   o += `<path id="trace" d="" fill="none" stroke="${BLUE}" stroke-width="${r2(Math.max(2.2, s / 6))}" stroke-linecap="round" stroke-linejoin="round"/>`;
   o += `<circle id="voix" cx="${r2(xb)}" cy="-99" r="${r2(s * 0.36)}" fill="${BLUE}"/>`;
-  const label = `Intervalle ${S.i + 1} sur ${S.N} : ${nomIntervalle(it.ref, it.cible)}. Toucher pour réentendre la première note.`;
   $('systems').style.gap = '0px';
-  $('systems').innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${label}">${o}</svg>`;
+  $('systems').innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${label} Toucher pour réentendre la note de départ.">${o}</svg>`;
 }
 // Les TRACE_S dernières secondes de la voix, la plus récente à droite ; hors de l'échelle, la courbe longe le bord.
+// La bande fonce à mesure que la note est tenue.
 function chantLoop() {
   if (!S || S.over || S.kind !== 'chant') return;
-  const tr = $('trace'), dot = $('voix');
+  const tr = $('trace'), dot = $('voix'), bande = $('bande');
+  if (bande) bande.setAttribute('opacity', String(r2(0.16 + 0.3 * S.part)));
   if (tr && S.track.length) {
     const { y0, hc, xa, xb } = chantLayout(), tN = S.track[S.track.length - 1].t, px = (xb - xa) / TRACE_S;
     let d = '', pen = false, last = null;
@@ -605,27 +593,154 @@ function chantLoop() {
     tr.setAttribute('d', d);
     dot.setAttribute('cy', S.track[S.track.length - 1].c === null || last === null ? -99 : r2(last));
   } else if (tr) { tr.setAttribute('d', ''); dot.setAttribute('cy', -99); }
-  requestAnimationFrame(chantLoop);
+  const mine = S;
+  requestAnimationFrame(() => { if (S === mine) chantLoop(); });
 }
-function finishChant() {
-  if (!S || S.over) return;
-  S.over = true;
-  if (S.audio) S.audio.stop();
-  if (S.lock) { try { S.lock.release(); } catch (e) { /* déjà libéré */ } }
-  const R = S.results;
-  if (!R.length) { S = null; $('systems').classList.remove('chant'); show('home'); return; }
-  const sec = R.reduce((a, r) => a + r.ms, 0) / R.length / 1000, cents = Math.round(R.reduce((a, r) => a + Math.abs(r.cents), 0) / R.length);
-  $('result').innerHTML = `${R.length} ${R.length > 1 ? 'intervalles' : 'intervalle'} · ${sec.toFixed(1).replace('.', ',')} s pour trouver la note<small>écart moyen : ${cents} cents</small>`;
-  $('after').hidden = false;
-  $('share').hidden = !DEBUG;
-  // Un intervalle = [position de la référence, position de la cible, temps pour trouver (ms), écart médian (cents), réécoutes]
-  saveSession({ id: S.at + '-' + Math.random().toString(36).slice(2, 8), fmt: 2, app: VERSION, at: S.at, mode: 'chant', input: 'chant', niveau: S.niveau + 1,
-    n: S.N, ok: R.length, tol: TOL, tenue: TENUE, items: R.map((r) => [r.ref, r.cible, r.ms, r.cents, r.replays]) });
+
+// ---------- lecture d'intervalles : enregistrement des noms ----------
+// La reconnaissance des noms d'intervalles n'existe pas encore : elle s'apprend sur la voix de l'utilisateur. Cet écran
+// affiche les noms un par un et garde le son ; le fichier partagé porte l'instant d'affichage de chaque nom.
+const NOMS = INTERVALLES.slice(1).map((q) => q.nom);
+async function startEnreg() {
+  const au = await ouvrirSon(), at = new Date().toISOString();
+  const s = { kind: 'enreg', exo: 'noms', input: 'voix', phase: 'intro', pcm: [], pcmN: 0, journal: [], liste: [], i: -1, level: 0, rate: au.ctx.sampleRate,
+    over: false, pause: false, at, id: nouvelId(at) };
+  S = s;
+  au.sink = (y) => {
+    if (s.over) return;
+    let e = 0;
+    for (let i = 0; i < y.length; i++) e += y[i] * y[i];
+    s.level = Math.sqrt(e / Math.max(1, y.length));
+    if (s.phase === 'dire') garder(s, y);
+  };
+  $('systems').className = 'dire';
+}
+function serie() {
+  const s = S;
+  // chaque nom SERIE fois, dans le désordre, jamais deux fois de suite
+  let liste;
+  do {
+    liste = [];
+    for (let k = 0; k < SERIE; k++) liste.push(...NOMS);
+    for (let i = liste.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [liste[i], liste[j]] = [liste[j], liste[i]]; }
+  } while (liste.some((q, i) => i && q === liste[i - 1]));
+  Object.assign(s, { phase: 'dire', liste, i: -1, pcm: [], pcmN: 0, journal: [], at: new Date().toISOString() });
+  renderEnreg();
+  const pas = () => {
+    if (S !== s || s.over || s.phase !== 'dire') return;
+    s.i += 1;
+    if (s.i >= s.liste.length) { s.phase = 'fin'; s.fichier = diagFile(); renderEnreg(); return; }   // le fichier est fait tout de suite : il reste partageable
+    s.journal.push([Math.round(s.pcmN / 16), s.liste[s.i]]);
+    renderEnreg();
+    s.promptT = setTimeout(pas, +params.get('periode') || PROMPT_MS);
+  };
+  s.promptT = setTimeout(pas, 900);
+}
+function renderEnreg() {
+  const s = S, n = NOMS.length * SERIE, sec = Math.round(n * PROMPT_MS / 1000);
+  let h;
+  if (s.phase === 'intro') {
+    h = `<p class="consigne">Pour reconnaître les noms d'intervalles, l'app doit d'abord apprendre ta voix. Une série : ${n} noms à lire à voix haute, un toutes les deux secondes et demie (${Math.floor(sec / 60)} min ${sec % 60} s).</p>`
+      + '<button type="button" class="primary" data-e="go">Enregistrer une série</button>';
+  } else if (s.phase === 'dire') {
+    h = `<p class="mot">${s.i < 0 ? '' : maj(s.liste[s.i])}</p><p class="compte">${Math.max(0, s.i + 1)} / ${n}</p>`;
+  } else {
+    h = '<p class="consigne">Série enregistrée.</p><button type="button" class="primary" data-e="part">Partager l\'enregistrement</button>'
+      + '<button type="button" class="lien" data-e="go">Une autre série</button>';
+  }
+  $('systems').style.gap = ''; $('systems').innerHTML = h;
+}
+
+// ---------- réglages ----------
+// Ouverts depuis l'exercice, qui attend. On y change d'exercice et tous ses paramètres ; à la fermeture, l'exercice
+// reprend, ou repart avec les nouveaux réglages s'ils ont changé.
+const EXOS = [['Lecture', [['notes', 'Notes'], ['noms', 'Intervalles']]], ['Chant', [['intervalles', 'Intervalles'], ['portee', 'Portée'], ['accords', 'Accords']]]];
+let avant = '';
+const rang = (titre, corps) => `<div class="rang">${titre ? `<span>${titre}</span>` : ''}${corps}</div>`;
+const radios = (k, opts, cur) => `<div class="choice" role="radiogroup">${opts.map(([v, t]) => `<button type="button" role="radio" aria-checked="${v === cur}" data-a="set" data-k="${k}" data-v="${v}">${t}</button>`).join('')}</div>`;
+const coches = (k, opts, on) => `<div class="choice">${opts.map(([v, t, l]) => `<button type="button" role="checkbox" aria-checked="${on(v)}" data-a="tog" data-k="${k}" data-v="${v}"${l ? ` aria-label="${l}"` : ''}>${t}</button>`).join('')}</div>`;
+const fleches = (k, bas, haut, quoi) => `<button type="button" data-a="pas" data-k="${k}" data-v="-1" aria-label="${quoi} : plus grave"${bas ? '' : ' disabled'}>↓</button>`
+  + `<button type="button" data-a="pas" data-k="${k}" data-v="1" aria-label="${quoi} : plus aiguë"${haut ? '' : ' disabled'}>↑</button>`;
+function etendueHTML(clef) {
+  const [lo, hi] = prefs.notes[clef];
+  return `<div class="etendue">${miniPortee(clef, lo, hi, 9)}<div class="pas">${fleches(`${clef}.0`, lo > P_MIN, hi - lo > 2, 'Note la plus grave')}<i></i>${fleches(`${clef}.1`, hi - lo > 2, hi < P_MAX, 'Note la plus aiguë')}</div></div>`;
+}
+function reglagesHTML() {
+  const e = prefs.exo, r = prefs[e];
+  let h = EXOS.map(([titre, liste]) => rang(titre, radios('exo', liste, e))).join('');
+  if (e === 'notes') {
+    h += rang('Clé', radios('notes.clef', [['sol', 'Clé de sol'], ['fa', 'Clé de fa'], ['deux', 'Les deux']], r.clef));
+    h += rang('Étendue', (r.clef === 'deux' ? ['sol', 'fa'] : [r.clef]).map(etendueHTML).join(''));
+    if (navigator.requestMIDIAccess) {
+      h += rang('Réponse', radios('notes.input', [['voix', 'À la voix'], ['midi', 'Au clavier']], r.input));
+      if (r.input === 'midi' && !midi.inputs().length) h += `<p class="consigne">${midi.refus ? 'Accès MIDI refusé par le navigateur.' : 'Aucun clavier MIDI détecté. Branche-le : la lecture reste à la voix en attendant.'}</p>`;
+    }
+  } else if (e === 'noms') {
+    h += '<p class="consigne">Cet exercice attend un enregistrement de ta voix.</p>';
+  } else {
+    if (e === 'accords') {
+      h += rang('Accords', coches('accords.types', ACCORDS.map((a) => [a.id, chiffrage(0, a.id, r.notation)]), (v) => r.types.includes(v)));
+      h += rang('Écriture', radios('accords.notation', [['lettres', 'Cm7 · Cmaj7'], ['signes', 'C–7 · C∆7']], r.notation));
+    } else {
+      h += rang('Intervalles', coches(`${e}.iv`, TOUS.map((st) => [st, INTERVALLES[st].court, INTERVALLES[st].nom]), (v) => r.iv.includes(v)));
+      h += rang('Sens', coches(e, [['montant', 'Montant'], ['descendant', 'Descendant']], (v) => !!r[v]));
+      if (e === 'intervalles') h += rang('', coches(e, [['depart', 'Chanter d\'abord la note de départ']], (v) => !!r[v]));
+    }
+    const t = prefs.tenue;
+    h += rang('Tenue de la note', `<div class="pas"><button type="button" data-a="pas" data-k="tenue" data-v="-1" aria-label="Tenue plus courte"${t > 300 ? '' : ' disabled'}>−</button><output>${(t / 1000).toFixed(1).replace('.', ',')} s</output>`
+      + `<button type="button" data-a="pas" data-k="tenue" data-v="1" aria-label="Tenue plus longue"${t < 2000 ? '' : ' disabled'}>+</button></div>`);
+  }
+  if (DEBUG && S && S.pcm && S.pcmN) h += '<button type="button" id="share" data-a="part">Partager l\'audio de la séance</button>';
+  return h;
+}
+function ouvrirReglages() {
+  if (!S || occupe) return;
+  S.pause = true; clearTimeout(S.promptT);
+  if (S.kind === 'enreg' && S.phase === 'dire') S.phase = 'intro';     // une série interrompue est à refaire
+  avant = JSON.stringify(prefs);
+  $('reglages').innerHTML = reglagesHTML();
+  $('sheet').hidden = false;
+}
+function fermerReglages() {
+  $('sheet').hidden = true;
+  if (!S) return;
+  if (JSON.stringify(prefs) !== avant) { savePrefs(); lancer(prefs.exo); return; }
+  S.pause = false;
+  if (S.kind === 'notes' && S.rec) S.tStart = S.rec.time;               // ce qui a été dit pendant les réglages ne compte pas
+  if (S.kind === 'chant') { if (S.phase === 'tenu') suivant(); else playRef(); }
+  render();
+}
+function reglage(b) {
+  const a = b.dataset.a, k = b.dataset.k, v = b.dataset.v;
+  if (a === 'part') { shareAudio(); return; }
+  if (a === 'set') {
+    if (k === 'exo') prefs.exo = v;
+    else { const [e, c] = k.split('.'); prefs[e][c] = v; }
+    if (k === 'notes.input' && v === 'midi') midi.open().catch(() => { midi.refus = true; }).then(() => { if (!$('sheet').hidden) $('reglages').innerHTML = reglagesHTML(); });
+  } else if (a === 'tog') {
+    const [e, c] = k.split('.'), r = prefs[e];
+    if (c) {                                                            // liste : intervalles ou accords, il en reste toujours un
+      const x = c === 'iv' ? +v : v, i = r[c].indexOf(x);
+      if (i < 0) r[c].push(x); else if (r[c].length > 1) r[c].splice(i, 1);
+      if (c === 'iv') r[c].sort((p, q) => p - q);
+    } else {
+      r[v] = !r[v];
+      if (!r.montant && !r.descendant) r[v === 'montant' ? 'descendant' : 'montant'] = true;   // il reste toujours un sens
+    }
+  } else if (a === 'pas') {
+    if (k === 'tenue') prefs.tenue = Math.max(300, Math.min(2000, prefs.tenue + 100 * +v));
+    else {
+      const [clef, i] = k.split('.'), e = prefs.notes[clef];
+      e[+i] += +v;
+      e[0] = Math.max(P_MIN, Math.min(e[0], P_MAX - 2)); e[1] = Math.min(P_MAX, Math.max(e[1], e[0] + 2));
+    }
+  }
+  $('reglages').innerHTML = reglagesHTML();
 }
 
 // ---------- clavier MIDI ----------
 const midi = {
-  access: null,
+  access: null, refus: false,
   inputs() { return this.access ? Array.from(this.access.inputs.values()).filter((i) => i.state !== 'disconnected') : []; },
   async open() {
     if (!navigator.requestMIDIAccess) return false;
@@ -644,28 +759,8 @@ const midi = {
 // ---------- démarrage ----------
 modelP = fetch('model.json').then((r) => { if (!r.ok) throw new Error('modèle vocal introuvable'); return r.json(); }).then(loadModel);
 modelP.catch((e) => say('Chargement impossible : ' + e.message));
-const exo = () => (params.get('exo') || prefs.exo);
-function showHome() {
-  const chant = exo() === 'chant';
-  $('clef').hidden = chant; $('niveau').hidden = !chant;
-  $('input').hidden = chant || !navigator.requestMIDIAccess;
-  say(chant ? NIVEAUX[+prefs.niveau || 0].texte + ' La première note sonne, chante la seconde.' : '');
-}
-wireChoice('exo', 'exo', showHome);
-wireChoice('niveau', 'niveau', showHome);
-wireChoice('clef', 'clef');
-if (navigator.requestMIDIAccess) {
-  wireChoice('input', 'input', async (v) => {
-    if (v !== 'midi') { say(''); return; }
-    try { say((await midi.open()) ? '' : 'Aucun clavier MIDI détecté. Branche-le, puis choisis à nouveau « Au clavier ».'); }
-    catch (e) { say('Accès MIDI refusé par le navigateur.'); }
-  });
-  if (prefs.input === 'midi') midi.open().catch(() => {});
-} else {
-  prefs.input = 'voix';
-}
-showHome();
-$('go').addEventListener('click', () => (exo() === 'chant' ? startChant() : start()));
+if (navigator.requestMIDIAccess) { if (prefs.notes.input === 'midi') midi.open().catch(() => {}); } else prefs.notes.input = 'voix';
+$('liste').addEventListener('click', (e) => { const b = e.target.closest('button[data-exo]'); if (b) lancer(b.dataset.exo); });
 // cinq touches rapides sur le titre : active ou coupe le mode diagnostic (son partageable, syllabes entendues)
 let taps = [];
 document.querySelector('h1').addEventListener('click', () => {
@@ -676,15 +771,27 @@ document.querySelector('h1').addEventListener('click', () => {
     say(DEBUG ? 'Mode diagnostic activé.' : 'Mode diagnostic coupé.');
   }
 });
-const goHome = () => { S = null; $('systems').classList.remove('chant'); show('home'); };
-$('quit').addEventListener('click', () => { if (S && !S.over) finish(); else goHome(); });
-$('again').addEventListener('click', () => (S && S.kind === 'chant' ? startChant() : start()));
-$('done').addEventListener('click', goHome);
-// chant : toucher la portée rejoue la note de référence
-$('systems').addEventListener('click', () => { if (S && S.kind === 'chant' && !S.over && S.phase === 'vise') { S.replays += 1; playRef(); } });
-$('share').addEventListener('click', shareAudio);
-$('page').addEventListener('click', () => { if (S && !S.over && S.ctx && S.ctx.state !== 'running') S.ctx.resume().catch(() => {}); });
+$('quit').addEventListener('click', quitter);
+$('regler').addEventListener('click', ouvrirReglages);
+$('fermer').addEventListener('click', fermerReglages);
+$('reglages').addEventListener('click', (e) => { const b = e.target.closest('button[data-a]'); if (b && !b.disabled) reglage(b); });
+$('systems').addEventListener('click', (e) => {
+  if (!S || S.over || S.pause) return;
+  // chant : toucher l'exercice rejoue la note de départ
+  if (S.kind === 'chant' && S.phase === 'vise') { S.replays += 1; playRef(); return; }
+  const b = e.target.closest('button[data-e]');
+  if (b && S.kind === 'enreg') { if (b.dataset.e === 'go') serie(); else shareAudio(); }
+});
+$('page').addEventListener('click', () => {
+  if (AU && AU.ctx.state !== 'running') AU.ctx.resume().catch(() => {});
+  ligne();
+});
 window.addEventListener('resize', render);
-document.addEventListener('visibilitychange', () => { if (document.hidden && S && !S.over && S.input !== 'midi') finish(); });
+// Page masquée : le micro est rendu. Une série enregistrée et pas encore partagée est gardée (le partage lui-même peut masquer la page).
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden || !S || S.input === 'midi') return;
+  if (S.kind === 'enreg' && S.phase === 'fin') return;
+  quitter();
+});
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
-window.__solfege = { VERSION, get session() { return S; }, verdicts, onMidiNote, diagFile, get gateOff() { return gateOff; } };
+window.__solfege = { VERSION, prefs, get session() { return S; }, get son() { return AU; }, verdicts, onMidiNote, diagFile, get gateOff() { return gateOff; } };

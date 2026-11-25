@@ -39,71 +39,86 @@ main {
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 button:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
 
-#home { justify-content: center; gap: 30px; }
+#home { justify-content: center; gap: 26px; }
 h1 { margin: 0; font-size: 44px; line-height: 1; font-weight: 400; font-style: italic; }
-.choice { display: flex; gap: 22px; flex-wrap: wrap; justify-content: center; }
+#liste { display: flex; flex-direction: column; align-items: center; }
+.rubrique { margin: 16px 0 0; font-size: 15px; font-style: italic; color: var(--soft); }
+#liste button { min-height: 48px; padding: 0 18px; font-size: 24px; }
+.choice { display: flex; gap: 6px 22px; flex-wrap: wrap; justify-content: center; }
 .choice button { min-height: 44px; padding: 0 2px; color: var(--soft); border-bottom: 2px solid transparent; }
 .choice button[aria-checked="true"] { color: var(--ink); border-bottom-color: var(--ink); }
 .primary { min-height: 56px; min-width: 220px; padding: 0 28px; background: var(--ink); color: var(--paper); font-size: 20px; }
-.primary:disabled { opacity: 0.5; }
+.lien { min-height: 44px; font-style: italic; text-decoration: underline; text-underline-offset: 4px; }
 #msg { margin: 0; min-height: 1.4em; max-width: 30em; text-align: center; font-size: 16px; font-style: italic; color: var(--soft); }
 
 #page { gap: 0; }
-#bar { width: 100%; max-width: 760px; height: 44px; display: flex; align-items: center; justify-content: space-between; flex: none; }
-#quit { width: 44px; height: 44px; margin-left: -12px; font-size: 30px; line-height: 1; color: var(--soft); }
+#bar, #sheet-bar { width: 100%; max-width: 760px; height: 44px; display: flex; align-items: center; justify-content: space-between; flex: none; }
+#quit, #fermer { width: 44px; height: 44px; margin-left: -12px; font-size: 30px; line-height: 1; color: var(--soft); }
+#regler { min-height: 44px; font-size: 16px; font-style: italic; color: var(--soft); }
 #mic { width: 12px; height: 12px; border-radius: 50%; background: var(--blue); opacity: 0.15; transform: scale(0.6); }
 #systems { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 8px; align-items: center; flex: none; }
 #systems svg { display: block; overflow: visible; }
-#systems.chant { margin: auto 0; cursor: pointer; }   /* une annotation en bout de portée déborde dans la marge au lieu d'être coupée */
-#foot { width: 100%; max-width: 760px; margin-top: auto; padding-top: 12px; display: flex; flex-direction: column; align-items: center; gap: 12px; min-height: 104px; }
-#result { margin: 0; text-align: center; font-size: 20px; min-height: 1.4em; }
-#result small { display: block; font-size: 15px; font-style: italic; color: var(--soft); }
-#after { display: flex; gap: 28px; }
-#after button { min-height: 44px; font-style: italic; text-decoration: underline; text-underline-offset: 4px; }
-#debug { width: 100%; max-width: 760px; margin: 8px 0 0; font: 12px/1.4 ui-monospace, Menlo, monospace; color: var(--soft); white-space: pre-wrap; word-break: break-word; }
+#systems { margin: auto 0; }
+#systems.chant { cursor: pointer; }
+#systems.dire { gap: 22px; text-align: center; }
+.consigne { margin: 0; max-width: 26em; color: var(--soft); font-style: italic; }
+.mot { margin: 0; font-size: 34px; font-style: italic; min-height: 1.4em; }
+.compte { margin: 0; font-size: 15px; color: var(--soft); }
+#foot { width: 100%; max-width: 760px; padding-top: 8px; display: flex; flex-direction: column; align-items: center; gap: 8px; min-height: 44px; }
+#result { margin: 0; text-align: center; font-size: 16px; font-style: italic; color: var(--soft); min-height: 1.4em; }
+#debug { width: 100%; max-width: 760px; margin: 0; font: 12px/1.4 ui-monospace, Menlo, monospace; color: var(--soft); white-space: pre-wrap; word-break: break-word; }
 #share { font: 13px/1.4 ui-monospace, Menlo, monospace; text-decoration: underline; min-height: 44px; }
+
+#sheet {
+  position: fixed; inset: 0; z-index: 5; overflow-y: auto; background: var(--paper); display: flex; flex-direction: column; align-items: center;
+  padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+}
+#sheet-bar span { font-size: 16px; font-style: italic; color: var(--soft); }
+#reglages { width: 100%; max-width: 560px; display: flex; flex-direction: column; align-items: center; gap: 20px; padding-top: 6px; }
+.rang { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 100%; }
+.rang > span { font-size: 15px; font-style: italic; color: var(--soft); }
+.pas { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.pas button { width: 44px; height: 44px; font-size: 26px; line-height: 1; color: var(--soft); }
+.pas button:disabled { opacity: 0.25; }
+.pas output { min-width: 3.6em; text-align: center; }
+.etendue { display: flex; flex-direction: column; align-items: center; }
+.etendue .pas { gap: 0; margin-top: -8px; }
+.etendue .pas i { width: 18px; }
 </style>
 </head>
 <body>
 <main id="home">
   <h1>Solfège</h1>
-  <div class="choice" id="exo" role="radiogroup" aria-label="Exercice">
-    <button type="button" role="radio" aria-checked="true" data-v="lecture">Lecture</button>
-    <button type="button" role="radio" aria-checked="false" data-v="chant">Chant</button>
-  </div>
-  <div class="choice" id="clef" role="radiogroup" aria-label="Clé">
-    <button type="button" role="radio" aria-checked="true" data-v="sol">Clé de sol</button>
-    <button type="button" role="radio" aria-checked="false" data-v="fa">Clé de fa</button>
-    <button type="button" role="radio" aria-checked="false" data-v="deux">Les deux</button>
-  </div>
-  <div class="choice" id="input" role="radiogroup" aria-label="Façon de répondre" hidden>
-    <button type="button" role="radio" aria-checked="true" data-v="voix">À la voix</button>
-    <button type="button" role="radio" aria-checked="false" data-v="midi">Au clavier</button>
-  </div>
-  <div class="choice" id="niveau" role="radiogroup" aria-label="Niveau" hidden>
-    <button type="button" role="radio" aria-checked="true" data-v="0">Niveau 1</button>
-    <button type="button" role="radio" aria-checked="false" data-v="1">Niveau 2</button>
-    <button type="button" role="radio" aria-checked="false" data-v="2">Niveau 3</button>
-  </div>
-  <button type="button" class="primary" id="go">Commencer</button>
+  <nav id="liste" aria-label="Exercices">
+    <p class="rubrique">Lecture</p>
+    <button type="button" data-exo="notes">Notes</button>
+    <button type="button" data-exo="noms">Intervalles</button>
+    <p class="rubrique">Chant</p>
+    <button type="button" data-exo="intervalles">Intervalles</button>
+    <button type="button" data-exo="portee">Portée</button>
+    <button type="button" data-exo="accords">Accords</button>
+  </nav>
   <p id="msg" role="status"></p>
 </main>
 <main id="page" hidden>
   <div id="bar">
-    <button type="button" id="quit" aria-label="Terminer la page">×</button>
+    <button type="button" id="quit" aria-label="Quitter l'exercice">×</button>
     <span id="mic" aria-hidden="true"></span>
+    <button type="button" id="regler">Réglages</button>
   </div>
   <div id="systems" aria-live="off"></div>
   <div id="foot">
     <p id="result" role="status"></p>
-    <div id="after" hidden>
-      <button type="button" id="again">Encore</button>
-      <button type="button" id="done">Terminer</button>
-    </div>
-    <button type="button" id="share" hidden>Partager l'audio de la séance</button>
     <pre id="debug" hidden></pre>
   </div>
 </main>
+<div id="sheet" role="dialog" aria-modal="true" aria-label="Réglages" hidden>
+  <div id="sheet-bar">
+    <button type="button" id="fermer" aria-label="Fermer les réglages">×</button>
+    <span>Réglages</span>
+  </div>
+  <div id="reglages"></div>
+</div>
 <script type="module" src="app.js"></script>
 </body>
 </html>
