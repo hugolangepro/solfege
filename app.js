@@ -2,19 +2,20 @@
 import { loadModel, Recognizer, Resampler, Follower, SYLLABES } from './engine.js';
 import { GLYPHS } from './glyphs.js';
 
-const VERSION = '2026-11-25.3';
+const VERSION = '2026-11-25.4';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
 try { if (localStorage.getItem('solfege.debug') === '1') DEBUG = true; } catch (e) { /* stockage indisponible */ }
 const TEST_MIDI = params.get('input') === 'midi';      // tests sans clavier branché
-const N_SYS = 4, PER = 8, SS = 191;
+const N_SYS = 4, N_SYS_PIANO = 3, PER = 8, SS = 191;
+const RED_CONF = 0.9;                                  // une syllabe au moins aussi nette colore la note en rouge sans attendre la suivante
+const END_MS = 500, COMMIT_MS = 2500, COMMIT_LAST_MS = 1200;
 const MAX_SESSIONS = 2000;                             // pages gardées sur l'appareil
 const DIAG_MAX = 16000 * 300;                          // diagnostic : cinq minutes de son au plus
 const INK = '#1C1A17', DONE = 'rgba(28,26,23,0.36)', RED = '#B3261E', BLUE = '#1F4E8C', SOFT = '#6B6457', LINE = 'rgba(28,26,23,0.72)';
 const CLEFS = { sol: { glyph: 'gclef', off: 2, base: 4, nom: 'clé de sol' }, fa: { glyph: 'fclef', off: 4, base: 2, nom: 'clé de fa' } };
 const SEMIS = [0, 2, 4, 5, 7, 9, 11];
-const MIDI_NOMS = ['do', 'do dièse', 'ré', 'mi bémol', 'mi', 'fa', 'fa dièse', 'sol', 'la bémol', 'la', 'si bémol', 'si'];
 
 // ---------- notes ----------
 // p = position sur la portée : 0 sur la ligne du bas, +1 par degré.
@@ -25,24 +26,27 @@ function noteInfo(clef, p) {
   return { clef, p, cls, midi };
 }
 
+// « Les deux » : un système de piano, chaque note sur la portée du haut (clé de sol) ou du bas (clé de fa).
 function buildExercise(mode) {
+  const n = (mode === 'deux' ? N_SYS_PIANO : N_SYS) * PER;
   const forced = params.get('seq');
   if (forced) {
-    return forced.split(',').slice(0, N_SYS * PER).map((s) => {
-      const cls = SYLLABES.indexOf(s.trim());
-      return noteInfo('sol', ((cls - 2) % 7 + 7) % 7);
+    return forced.split(',').slice(0, n).map((t, i) => {
+      const cls = SYLLABES.indexOf(t.trim());
+      const clef = mode === 'fa' || (mode === 'deux' && i % 3 === 1) ? 'fa' : 'sol';
+      return noteInfo(clef, ((cls - CLEFS[clef].off) % 7 + 7) % 7);
     });
   }
-  const clefs = mode === 'deux' ? ['sol', 'fa', 'sol', 'fa'] : Array(N_SYS).fill(mode);
   const notes = [];
-  let prev = null;
-  for (let s = 0; s < N_SYS; s++) {
-    for (let i = 0; i < PER; i++) {
-      let p;
-      do { p = -2 + Math.floor(Math.random() * 13); } while (p === prev);
-      prev = p;
-      notes.push(noteInfo(clefs[s], p));
-    }
+  let prev = '';
+  for (let i = 0; i < n; i++) {
+    let clef, p;
+    do {
+      clef = mode === 'deux' ? (Math.random() < 0.5 ? 'sol' : 'fa') : mode;
+      p = -2 + Math.floor(Math.random() * 13);
+    } while (clef + p === prev);
+    prev = clef + p;
+    notes.push(noteInfo(clef, p));
   }
   return notes;
 }
@@ -50,58 +54,69 @@ function buildExercise(mode) {
 // ---------- portée ----------
 const r2 = (v) => Math.round(v * 100) / 100;
 
-// Marges d'une portée : la place des notes hors portée au-dessus, et celle de l'annotation en dessous.
-function metrics(s) {
-  const fs = Math.max(13, Math.round(s * 1.25));
-  return { fs, padTop: Math.round(1.75 * s + 6), padBot: Math.round(1.75 * s + fs + 10) };
+// Hauteurs d'une portée, ou d'un système de piano : la place des notes hors portée au-dessus, celle du repère en dessous.
+function metrics(s, grand) {
+  const a = Math.max(6, s * 0.55);                                        // demi-largeur du repère
+  const padTop = Math.round(1.75 * s + 6), padBot = Math.round(1.75 * s + 1.7 * a + 10);
+  const between = grand ? 5 * s : 0;                                      // de la ligne du bas de la clé de sol à la ligne du haut de la clé de fa
+  return { a, padTop, between, H: padTop + 4 * s + (grand ? between + 4 * s : 0) + padBot };
 }
 
-function systemSVG(notes, states, W, s) {
-  const clef = notes[0].clef;
-  const { padTop, padBot, fs } = metrics(s);
-  const yb = padTop + 4 * s, H = yb + padBot, k = s / SS;
-  const x0 = 5.6 * s, xr = W - 1.5 * s, dx = (xr - x0) / (PER - 1);
+// Accolade d'un système de piano, dans le rectangle (x, y, w, h).
+function bracePath(x, y, w, h) {
+  const P = (px, py) => `${r2(x + px * w)} ${r2(y + py * h)}`;
+  return `M${P(1, 0)}C${P(0.2, 0.05)} ${P(0.9, 0.45)} ${P(0, 0.5)}C${P(0.9, 0.55)} ${P(0.2, 0.95)} ${P(1, 1)}`
+    + `C${P(0.6, 0.92)} ${P(1.3, 0.58)} ${P(0, 0.5)}C${P(1.3, 0.42)} ${P(0.6, 0.08)} ${P(1, 0)}Z`;
+}
+
+// Un système : une portée, ou deux portées réunies par une accolade. Une note validée s'efface en gris, une note fausse
+// passe en rouge, sans autre marque. Une note que le micro n'a pas entendue reste noire.
+function systemSVG(notes, states, W, s, grand) {
+  const { a, padTop, between, H } = metrics(s, grand), k = s / SS;
+  const xs = grand ? Math.round(1.3 * s) : 0;                             // l'accolade tient dans la marge gauche
+  const yb = grand ? { sol: padTop + 4 * s, fa: padTop + 8 * s + between } : { [notes[0].clef]: padTop + 4 * s };
+  const yLow = grand ? yb.fa : yb[notes[0].clef];
+  const x0 = xs + 5.6 * s, xr = W - 1.5 * s, dx = (xr - x0) / (PER - 1);
   const lw = Math.max(0.9, s / 12);
   let o = '';
-  for (let i = 0; i < 5; i++) o += `<line x1="0" y1="${r2(yb - i * s)}" x2="${W}" y2="${r2(yb - i * s)}" stroke="${LINE}" stroke-width="${r2(lw)}"/>`;
-  const g = GLYPHS[CLEFS[clef].glyph];
-  o += `<path d="${g.d}" transform="translate(${r2(3 - g.left * k)} ${r2(yb)}) scale(${k} ${-k}) translate(0 12)" fill="${INK}"/>`;
-  const ya = yb + 1.75 * s + fs + 2;
+  for (const clef of Object.keys(yb)) {
+    for (let i = 0; i < 5; i++) o += `<line x1="${xs}" y1="${r2(yb[clef] - i * s)}" x2="${W}" y2="${r2(yb[clef] - i * s)}" stroke="${LINE}" stroke-width="${r2(lw)}"/>`;
+    const g = GLYPHS[CLEFS[clef].glyph];
+    o += `<path d="${g.d}" transform="translate(${r2(xs + 3 - g.left * k)} ${r2(yb[clef])}) scale(${k} ${-k}) translate(0 12)" fill="${INK}"/>`;
+  }
+  if (grand) {
+    const yTop = yb.sol - 4 * s;
+    o += `<line x1="${r2(xs + lw / 2)}" y1="${r2(yTop - lw / 2)}" x2="${r2(xs + lw / 2)}" y2="${r2(yb.fa + lw / 2)}" stroke="${LINE}" stroke-width="${r2(lw * 1.3)}"/>`;
+    o += `<path d="${bracePath(0, yTop, xs - 0.35 * s, yb.fa - yTop)}" fill="${INK}"/>`;
+  }
   notes.forEach((n, i) => {
-    const st = states[i], x = x0 + i * dx, yc = yb - n.p * s / 2;
-    const col = st.kind === 'faux' ? RED : (st.kind === 'ok' || st.kind === 'manque') ? DONE : INK;
+    const st = states[i], x = x0 + i * dx, y0 = yb[n.clef], yc = y0 - n.p * s / 2;
+    const col = st.kind === 'faux' ? RED : st.kind === 'ok' ? DONE : INK;
     const led = [];
     if (n.p <= -2) for (let q = -2; q >= n.p; q -= 2) led.push(q);
     if (n.p >= 10) for (let q = 10; q <= n.p; q += 2) led.push(q);
-    for (const q of led) o += `<line x1="${r2(x - 1.02 * s)}" y1="${r2(yb - q * s / 2)}" x2="${r2(x + 1.02 * s)}" y2="${r2(yb - q * s / 2)}" stroke="${LINE}" stroke-width="${r2(lw * 1.3)}"/>`;
-    o += `<path d="${GLYPHS.nhblack.d}" transform="translate(${r2(x - 155 * k)} ${r2(yc + 91 * k)}) scale(${k} ${-k})" fill="${col}"/>`;
-    if (st.kind === 'faux') {
-      o += `<ellipse cx="${r2(x)}" cy="${r2(yc)}" rx="${r2(1.28 * s)}" ry="${r2(1.02 * s)}" transform="rotate(-14 ${r2(x)} ${r2(yc)})" fill="none" stroke="${RED}" stroke-width="${r2(Math.max(1.3, s / 8))}"/>`;
-      o += `<text x="${r2(x)}" y="${r2(ya)}" font-size="${fs}" font-style="italic" fill="${RED}" text-anchor="middle">${st.label}</text>`;
-    } else if (st.kind === 'manque') {
-      o += `<text x="${r2(x)}" y="${r2(ya)}" font-size="${fs}" font-style="italic" fill="${SOFT}" text-anchor="middle">?</text>`;
-    }
+    for (const q of led) o += `<line x1="${r2(x - 1.02 * s)}" y1="${r2(y0 - q * s / 2)}" x2="${r2(x + 1.02 * s)}" y2="${r2(y0 - q * s / 2)}" stroke="${LINE}" stroke-width="${r2(lw * 1.3)}"/>`;
+    o += `<path data-n="${st.j}" d="${GLYPHS.nhblack.d}" transform="translate(${r2(x - 155 * k)} ${r2(yc + 91 * k)}) scale(${k} ${-k})" fill="${col}"/>`;
     if (st.cur) {
-      const yt = yb + 1.75 * s + 4, a = Math.max(6, s * 0.55);
+      const yt = yLow + 1.75 * s + 4;
       o += `<polygon points="${r2(x)},${r2(yt)} ${r2(x - a)},${r2(yt + 1.7 * a)} ${r2(x + a)},${r2(yt + 1.7 * a)}" fill="${BLUE}"/>`;
     }
   });
-  const label = `Portée en ${CLEFS[clef].nom}, ${notes.length} notes`;
-  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${label}" font-family="inherit">${o}</svg>`;
+  const label = grand ? `Système de piano, ${notes.length} notes` : `Portée en ${CLEFS[notes[0].clef].nom}, ${notes.length} notes`;
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${label}">${o}</svg>`;
 }
 
+// Taille des portées : la plus grande qui laisse tenir tous les systèmes dans la hauteur de l'écran.
 function layout() {
+  const grand = S.mode === 'deux', nSys = Math.ceil(S.N / PER);
   const cs = getComputedStyle($('page'));
   const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight), padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
   const W = Math.floor(Math.min(window.innerWidth - padX, 760));
   const avail = window.innerHeight - padY - 44 - 104 - (DEBUG ? 60 : 0);
-  // hauteur d'une portée ≈ 7,5 interlignes + 30 px ; quatre portées et trois espaces de 8 px
-  // quatre portées d'environ 8,75 interlignes + 16 px, séparées d'au moins 8 px
-  let s = Math.max(8, Math.min(W / 32, (avail - 4 * 16 - 24) / 35, 20));
-  s = Math.floor(s * 2) / 2;
-  const m = metrics(s), H = m.padTop + 4 * s + m.padBot;
-  const gap = Math.max(8, Math.min((avail - 4 * H) / 3, 2.5 * s));
-  return { W, s, gap: Math.floor(gap) };
+  let s = Math.min(Math.floor(W / 32 * 2) / 2, 20);
+  while (s > 7 && nSys * metrics(s, grand).H + (nSys - 1) * 8 > avail) s -= 0.5;
+  const gap = Math.max(8, Math.min((avail - nSys * metrics(s, grand).H) / Math.max(1, nSys - 1), 2.5 * s));
+  return { W, s, gap: Math.floor(gap), grand };
 }
 
 // ---------- état ----------
@@ -129,29 +144,27 @@ function verdicts() {
   if (!S) return [];
   return S.input === 'midi' ? S.v : S.follower.verdicts();
 }
-function cursor() {
-  if (S.over) return -1;
-  return S.input === 'midi' ? S.k : S.follower.best();
-}
-
 function render() {
   if (!S) return;
-  const { W, s, gap } = layout(), v = verdicts(), cur = cursor();
+  const t0 = performance.now();
+  const { W, s, gap, grand } = layout(), v = verdicts();
+  // Note en cours, et syllabe nette qui ne lui correspond pas : la note passe au rouge tout de suite. La syllabe suivante
+  // tranche : une correction la valide, la note d'après la confirme fausse.
+  const k = S.over ? -1 : S.input === 'midi' ? S.k : S.follower.best();
+  const pend = !S.over && S.input === 'voix' ? S.follower.pending(RED_CONF) : null;
+  const cur = pend ? k + 1 : k;
   $('systems').style.gap = gap + 'px';
   let html = '';
   for (let sys = 0; sys * PER < S.notes.length; sys++) {
     const notes = S.notes.slice(sys * PER, sys * PER + PER);
     const states = notes.map((n, i) => {
-      const q = v[sys * PER + i];
-      if (!q) return { kind: 'next', cur: sys * PER + i === cur };
-      // au clavier, la bonne note jouée dans une autre octave se dit telle quelle : son nom seul serait celui de la note attendue
-      const label = q.v !== 'faux' ? '' : S.input !== 'midi' ? 'dit : ' + SYLLABES[q.cls]
-        : (q.midi - notes[i].midi) % 12 === 0 ? 'à l’octave' : MIDI_NOMS[q.midi % 12];
-      return { kind: q.v, label, cur: false };
+      const j = sys * PER + i, q = v[j];
+      return { j, kind: q ? q.v : pend && j === k ? 'faux' : 'next', cur: j === cur };
     });
-    html += systemSVG(notes, states, W, s);
+    html += systemSVG(notes, states, W, s, grand);
   }
   $('systems').innerHTML = html;
+  if (S.draw) S.draw.push(performance.now() - t0);
 }
 
 // ---------- son ----------
@@ -168,9 +181,9 @@ async function openMic(ctx, onSamples) {
     mute.gain.value = 0; mute.connect(ctx.destination);
     let node;
     if (ctx.audioWorklet && window.AudioWorkletNode) {
-      await ctx.audioWorklet.addModule('worklet.js');
+      await ctx.audioWorklet.addModule('worklet-2.js');      // nouveau nom à chaque changement de format : une page déjà ouverte garde l'ancien
       node = new AudioWorkletNode(ctx, 'tap', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
-      node.port.onmessage = (e) => onSamples(e.data);
+      node.port.onmessage = (e) => (e.data.x ? onSamples(e.data.x, e.data.t) : onSamples(e.data));
     } else {
       node = ctx.createScriptProcessor(1024, 1, 1);
       node.onaudioprocess = (e) => onSamples(new Float32Array(e.inputBuffer.getChannelData(0)));
@@ -205,12 +218,15 @@ async function start() {
       ctx.resume().catch(() => {});                       // dans le geste de l'utilisateur
       const model = await modelP;
       const rs = new Resampler(ctx.sampleRate), rec = new Recognizer(model);
-      S = { ...base, follower: new Follower(notes.map((n) => n.cls)), rec, ctx, model, heard: [], pcm: [], pcmN: 0, level: 0, rate: ctx.sampleRate, tStart: Infinity };
+      S = { ...base, follower: new Follower(notes.map((n) => n.cls)), rec, ctx, model, heard: [], pcm: [], pcmN: 0, level: 0, rate: ctx.sampleRate, tStart: Infinity,
+        lag: DEBUG ? [] : null, draw: DEBUG ? [] : null };
       const mine = S;
       rec.onLevel = (rms) => { mine.level = rms; };
       rec.onCandidate = (c) => onCandidate(mine, c);
-      const audio = await openMic(ctx, (x) => {
+      const audio = await openMic(ctx, (x, t) => {
         if (mine.over) return;
+        // diagnostic : temps mis par un bloc de son pour aller du micro (horloge audio) jusqu'ici
+        if (mine.lag && t !== undefined && mine.lag.length < 60000) mine.lag.push(Math.max(0, ctx.currentTime - t));
         if (!mine.got) { mine.got = true; if (S === mine && $('result').dataset.alerte) { $('result').textContent = ''; delete $('result').dataset.alerte; } }
         let y = rs.process(x);
         if (DEBUG && mine.pcmN < DIAG_MAX) {
@@ -251,19 +267,21 @@ async function start() {
 
 function onCandidate(sess, c) {
   if (sess !== S || S.over || c.time < S.tStart) return;
+  c.delay = S.rec.clock - c.time;                        // son écoulé depuis l'ancre de la syllabe au moment où elle est reconnue
   S.heard.push(c); S.follower.push(c);
   render(); debugLine();
   clearTimeout(S.commitT);
-  if (S.follower.best() >= S.N) {
-    // dernière note lue : on laisse 0,7 s à une éventuelle correction, sans repousser la fin si d'autres sons arrivent
-    if (!S.endT) S.endT = setTimeout(() => finish(), 700);
+  const k = S.follower.best();
+  if (k >= S.N) {
+    // dernière note lue : on laisse une demi-seconde à une éventuelle correction, sans repousser la fin si d'autres sons arrivent
+    if (!S.endT) S.endT = setTimeout(() => finish(), END_MS);
   } else {
     clearTimeout(S.endT); S.endT = null;
-    // une syllabe nette restée sans note pendant 2,5 s compte comme une réponse
+    // une syllabe nette restée sans note compte comme réponse après un silence, plus court sur la dernière note de la page
     S.commitT = setTimeout(() => {
       if (!S || S.over) return;
-      if (S.follower.commitLast()) { render(); if (S.follower.best() >= S.N) finish(); }
-    }, 2500);
+      if (S.follower.commitPending(RED_CONF)) { render(); if (S.follower.best() >= S.N) finish(); }
+    }, k === S.N - 1 ? COMMIT_LAST_MS : COMMIT_MS);
   }
 }
 
@@ -286,8 +304,17 @@ function levelLoop() {
 
 function debugLine() {
   if (!DEBUG || !S || S.input !== 'voix') return;
-  const last = S.heard.slice(-10).map((c) => `${SYLLABES[c.cls]} ${c.conf.toFixed(2)}`).join(', ');
-  $('debug').textContent = `v${VERSION} · ${S.rate} Hz · niveau ${S.level.toFixed(3)} · entendu : ${last}`;
+  const recent = S.heard.slice(-10), last = recent.map((c) => `${SYLLABES[c.cls]} ${c.conf.toFixed(2)}`).join(', ');
+  const q = stats(S.lag), d = stats(S.draw);
+  $('debug').textContent = `v${VERSION} · ${S.rate} Hz · niveau ${S.level.toFixed(3)} · précoces ${recent.filter((c) => c.early).length}/${recent.length}`
+    + ` · livraison ${q ? Math.round(q.med * 1000) : '?'} ms · dessin ${d ? d.med.toFixed(1) : '?'} ms · entendu : ${last}`;
+}
+
+// Médiane, 95e centile et maximum d'une série de mesures.
+function stats(a) {
+  if (!a || !a.length) return null;
+  const b = Float64Array.from(a).sort();
+  return { n: b.length, med: b[b.length >> 1], p95: b[Math.floor(b.length * 0.95)], max: b[b.length - 1] };
 }
 
 function finish() {
@@ -316,7 +343,8 @@ function finish() {
   // Une note = [clé (0 sol, 1 fa), position sur la portée, verdict (1 juste, 0 faux, -1 non entendue, null non lue),
   //             réponse (syllabe 0 à 6 à la voix, numéro MIDI au clavier), instant en ms depuis le début de la page]
   const CODE = { ok: 1, faux: 0, manque: -1 };
-  saveSession({ id: S.at + '-' + Math.random().toString(36).slice(2, 8), fmt: 2, app: VERSION, at: S.at, mode: S.mode, input: S.input,
+  // mode : 'sol', 'fa', ou 'piano' pour le système à deux portées
+  saveSession({ id: S.at + '-' + Math.random().toString(36).slice(2, 8), fmt: 2, app: VERSION, at: S.at, mode: S.mode === 'deux' ? 'piano' : S.mode, input: S.input,
     n: S.N, ok, faux, manque, dur: Math.round(dur * 10) / 10, rate, acc,
     notes: S.notes.map((n, i) => {
       const q = v[i];
@@ -344,7 +372,9 @@ function diagFile() {
     ecran: [window.innerWidth, window.innerHeight, window.devicePixelRatio], rate: S.rate, micro: S.audio ? S.audio.info : null,
     tStart: S.tStart, tronque: S.pcmN >= DIAG_MAX, mode: S.mode,
     attendu: S.notes.map((n) => SYLLABES[n.cls]),
-    entendu: S.heard.map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100]),
+    // par syllabe entendue : instant (ms), syllabe, confiance, son écoulé avant la reconnaissance (ms), 1 si reconnue sans attendre le sommet
+    entendu: S.heard.map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100, Math.round(c.delay * 1000), c.early ? 1 : 0]),
+    livraison: stats(S.lag), dessin: stats(S.draw), clefs: S.notes.map((n) => (n.clef === 'fa' ? 1 : 0)),
     verdicts: verdicts().map((q) => (q ? q.v : null)),
   };
   const json = new TextEncoder().encode(JSON.stringify(meta));

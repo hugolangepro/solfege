@@ -15,7 +15,14 @@ DIAG_JS = '''async () => { const f = window.__solfege.diagFile(); if (!f) return
   for (let i = 0; i < u.length; i += 8192) s += String.fromCharCode.apply(null, u.subarray(i, i + 8192));
   return { name: f.name, type: f.type, b64: btoa(s) }; }'''
 
-async def run(base, name, seq, viewport, wait_s, shots=True, debug=False):
+WATCH_JS = '''() => { window.__log = [];
+  const snap = () => { const s = window.__solfege.session; if (!s || !s.heard) return;
+    const reds = Array.from(document.querySelectorAll('#systems path[data-n]')).filter(p => p.getAttribute('fill') === '#B3261E').map(p => +p.dataset.n);
+    const cur = document.querySelector('#systems polygon');
+    window.__log.push({ t: performance.now(), heard: s.heard.length, reds, texts: document.querySelectorAll('#systems text').length, ellipses: document.querySelectorAll('#systems ellipse').length }); };
+  new MutationObserver(snap).observe(document.getElementById('systems'), { childList: true }); }'''
+
+async def run(base, name, seq, viewport, wait_s, shots=True, debug=False, clef=None):
     async with async_playwright() as p:
         b = await p.chromium.launch(channel='chrome', args=ARGS)
         ctx = await b.new_context(viewport=viewport, device_scale_factor=2, permissions=['microphone'])
@@ -25,7 +32,9 @@ async def run(base, name, seq, viewport, wait_s, shots=True, debug=False):
         pg.on('console', lambda m: errs.append('console: ' + m.text) if m.type == 'error' else None)
         await pg.goto(base + '?seq=' + urllib.parse.quote(','.join(seq)) + ('&debug' if debug else ''))
         await pg.wait_for_timeout(800)
+        if clef: await pg.click(f'#clef button[data-v="{clef}"]')
         if shots: await pg.screenshot(path=os.path.join(ICI, f'{name}_accueil.png'))
+        await pg.evaluate(WATCH_JS)
         await pg.click('#go')
         await pg.wait_for_timeout(11000)
         if shots: await pg.screenshot(path=os.path.join(ICI, f'{name}_encours.png'))
@@ -38,8 +47,10 @@ async def run(base, name, seq, viewport, wait_s, shots=True, debug=False):
         stored = await pg.evaluate("() => JSON.parse(localStorage.getItem('solfege.sessions') || '[]')")
         diag = await pg.evaluate(DIAG_JS) if debug else None
         share_visible = await pg.is_visible('#share')
+        log = await pg.evaluate('() => window.__log')
+        heard = await pg.evaluate("() => window.__solfege.session ? window.__solfege.session.heard.map(c => [c.cls, +c.conf.toFixed(2), Math.round(c.time * 1000), Math.round(c.delay * 1000), c.early ? 1 : 0]) : []")
         await b.close()
-        return state, result, errs, stored, diag, share_visible
+        return state, result, errs, stored, diag, share_visible, log, heard
 
 def lire_diag(raw):
     assert raw[:4] == b'RIFF' and raw[8:12] == b'WAVE', 'en-tête'
@@ -76,7 +87,7 @@ async def service_worker(base, proc):
 async def main():
     phone = {'width': 393, 'height': 852}
     with serveur() as (base, proc):
-        st, res, errs, stored, diag, share = await run(base, 'tel', SEQ, phone, 24)
+        st, res, errs, stored, diag, share, log, heard = await run(base, 'tel', SEQ, phone, 24)
         v = st['v'] if st else []
         print('A. page conforme :', sum(x == 'ok' for x in v), 'justes sur', len(v), '| terminé :', st and st['over'], '| version', st and st['version'], '| entendues', st and st['heard'])
         print('   résultat affiché :', res.replace('\n', ' / '), '| partage visible hors diagnostic :', share, '| erreurs :', errs)
@@ -84,15 +95,24 @@ async def main():
         print('   séance gardée :', {k: r[k] for k in ('id', 'fmt', 'app', 'mode', 'input', 'n', 'ok', 'faux', 'manque', 'dur', 'rate', 'acc')}, '| notes[:3] =', r['notes'][:3], '| octets :', len(json.dumps(r, separators=(',', ':'))))
 
         alt = SEQ[:]; alt[5] = 'la' if alt[5] != 'la' else 'mi'; alt[20] = 'do' if alt[20] != 'do' else 'ré'
-        st, res, errs, stored, diag, share = await run(base, 'tel_faux', alt, phone, 24)
+        st, res, errs, stored, diag, share, log, heard = await run(base, 'tel_faux', alt, phone, 24)
         v = st['v'] if st else []
         print('B. deux notes changées (cases 5 et 20) :', [(i, x) for i, x in enumerate(v) if x != 'ok'], '|', res.replace('\n', ' / '), '| erreurs :', errs)
+        # à quel moment chaque fausse note est-elle passée au rouge : dès sa propre syllabe, ou seulement à la suivante ?
+        for j in (5, 20):
+            first = next((e for e in log if j in e['reds']), None)
+            # rang de la syllabe dite pour la note j : la j-ième des syllabes retenues par l'alignement, soit celle qui porte l'instant de la note
+            idx = next((i for i, h in enumerate(heard) if h[2] == stored[-1]['notes'][j][4] + round(st['tStart'] * 1000)), None)
+            print('   note %d : rouge affiché quand %s syllabes étaient entendues ; sa propre syllabe est la n° %s ; son écoulé avant reconnaissance : %s ms' % (
+                j, first and first['heard'], idx is not None and idx + 1, idx is not None and heard[idx][3]))
+        print('   textes sous les notes : %d ; cercles : %d ; syllabes reconnues sans attendre le sommet : %d sur %d' % (
+            max(e['texts'] for e in log), max(e['ellipses'] for e in log), sum(h[4] for h in heard), len(heard)))
 
-        st, res, errs, stored, diag, share = await run(base, 'mac', SEQ, {'width': 1512, 'height': 900}, 24)
+        st, res, errs, stored, diag, share, log, heard = await run(base, 'mac', SEQ, {'width': 1512, 'height': 900}, 24)
         v = st['v'] if st else []
         print('C. grand écran :', sum(x == 'ok' for x in v), 'justes sur', len(v), '|', res.replace('\n', ' / '), '| erreurs :', errs)
 
-        st, res, errs, stored, diag, share = await run(base, 'diag', SEQ, phone, 24, shots=False, debug=True)
+        st, res, errs, stored, diag, share, log, heard = await run(base, 'diag', SEQ, phone, 24, shots=False, debug=True)
         raw = base64.b64decode(diag['b64'])
         chemin = os.path.join(ICI, 'diag_test.wav'); open(chemin, 'wb').write(raw)
         fmt, pcm, meta = lire_diag(raw)
@@ -103,6 +123,11 @@ async def main():
         print('   rejeu hors navigateur :', (rejeu.stdout.strip().splitlines() or [rejeu.stderr.strip()])[-1])
         ff = subprocess.run(['ffmpeg', '-v', 'error', '-i', chemin, '-f', 'null', '-'], capture_output=True, text=True)
         print('   lisible par ffmpeg :', ff.returncode == 0 and not ff.stderr.strip())
+
+        st, res, errs, stored, diag, share, log, heard = await run(base, 'piano', SEQ, phone, 19, clef='deux')
+        v = st['v'] if st else []
+        r = stored[-1]
+        print('F. système de piano à la voix :', sum(x == 'ok' for x in v), 'justes sur', len(v), '|', res.replace('\n', ' / '), '| mode gardé :', r['mode'], '| clés des 8 premières notes :', [q[0] for q in r['notes'][:8]], '| erreurs :', errs)
 
         pris, portee, titre, modele, msg, n, errs = await service_worker(base, proc)
         print('E. service worker : page prise en charge', pris, '| portée', portee.replace(base, '…/solfege/'), '| serveur éteint → titre', repr(titre), '| modèle version', modele, '| message', repr(msg), '| page de', n, 'notes | erreurs :', errs)

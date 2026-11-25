@@ -76,10 +76,20 @@ export class Resampler {
   }
 }
 
-// Détecteur de syllabes en flux : reçoit du son à 16 kHz, émet des candidats {frame, time, cls, conf}.
+// Détecteur de syllabes en flux : reçoit du son à 16 kHz, émet des candidats {frame, time, cls, conf, early}.
+// Deux règles d'émission, sur la probabilité de la meilleure syllabe calculée tous les 20 ms :
+// - précoce : dès `run` pas de suite au-dessus de `hi` pour la même syllabe, sans attendre le sommet ;
+// - sommet : maximum local au-dessus de `thr`, confirmé `half` pas plus tard (pour les syllabes moins nettes).
+// Une détection nette (≥ strong) bloque les suivantes de la même syllabe pendant `refr` pas et tant que
+// la probabilité n'est pas retombée (autre syllabe ou < lo) : une syllabe dite ne compte qu'une fois.
 export class Recognizer {
-  constructor(model, { thr = 0.3, half = 8 } = {}) {
+  constructor(model, { thr = 0.3, half = 8, hi = 0.95, run = 2, lo = 0.5, refr = 10, strong = 0.9 } = {}) {
     this.m = model; this.thr = thr; this.half = half;
+    this.hi = hi; this.run = run; this.lo = lo; this.refr = refr; this.strong = strong;
+    this.n0 = 0;                                  // rang du premier pas gardé dans this.steps
+    this.last = new Array(7).fill(null);          // par syllabe : {a: rang du pas, conf} de la dernière détection
+    this.rel = new Array(7).fill(-1);             // par syllabe : rang du premier relâchement depuis, ou -1
+    this.early = [];                              // rangs des dernières détections précoces
     this.buf = new Float32Array(0); this.bufStart = 0; this.frame = 0;
     this.R = 64; this.mel = new Float64Array(this.R * model.n_mels);
     this.rms3 = [0, 0, 0];
@@ -91,6 +101,7 @@ export class Recognizer {
     this.onCandidate = null; this.onLevel = null; this.onStep = null;
   }
   get time() { return this.frame * this.m.hop / this.m.sr; }
+  get clock() { return (this.frame * this.m.hop + this.m.n_fft) / this.m.sr; }   // fin de la trame en cours de calcul
   push(samples) {
     const nb = new Float32Array(this.buf.length + samples.length);
     nb.set(this.buf); nb.set(samples, this.buf.length); this.buf = nb;
@@ -149,21 +160,56 @@ export class Recognizer {
     let sum = 0; for (let q = 0; q < Q; q++) { out[q] = Math.exp(out[q] - mx); sum += out[q]; }
     let cls = 0, conf = -1;
     for (let q = 0; q < Q - 1; q++) { const p = out[q] / sum; if (p > conf) { conf = p; cls = q; } }
-    const step = { frame: f, cls, conf };
+    this._step({ frame: f, cls, conf });
+  }
+  _emit(s, conf, early) {
+    const m = this.m;
+    if (this.onCandidate) this.onCandidate({ frame: s.frame, time: (s.frame * m.hop + m.n_fft / 2) / m.sr, cls: s.cls, conf, early });
+  }
+  _blocked(c, idx) {
+    const L = this.last[c];
+    if (!L || L.conf < this.strong) return false;
+    if (idx - L.a < this.refr) return true;
+    return this.rel[c] < 0 || this.rel[c] > idx;
+  }
+  _step(step) {
     if (this.onStep) this.onStep(step);
-    this.steps.push(step);
-    // pic : au moins le seuil, pas dépassé dans le passé proche, strictement dominant sur le futur proche
-    const h = this.half, n = this.steps.length - 1, i = n - h;
-    if (i >= 0) {
-      const s = this.steps[i];
-      if (s.conf >= this.thr) {
-        let ok = true;
-        for (let j = Math.max(0, i - h); j < i && ok; j++) if (this.steps[j].conf > s.conf) ok = false;
-        for (let j = i + 1; j <= n && ok; j++) if (this.steps[j].conf >= s.conf) ok = false;
-        if (ok && this.onCandidate) this.onCandidate({ frame: s.frame, time: (s.frame * m.hop + m.n_fft / 2) / m.sr, cls: s.cls, conf: s.conf });
-      }
-      if (this.steps.length > 4 * h + 8) this.steps.splice(0, this.steps.length - (2 * h + 2));
+    const st = this.steps, h = this.half;
+    st.push(step);
+    if (st.length > 4 * h + 8) { const drop = st.length - (2 * h + 2); st.splice(0, drop); this.n0 += drop; }
+    const n0 = this.n0, n = n0 + st.length - 1;                 // rang de ce pas depuis le début
+    // relâchement : la syllabe détectée a cédé la place
+    for (let c = 0; c < 7; c++) {
+      const L = this.last[c];
+      if (L && this.rel[c] < 0 && n > L.a && (step.cls !== c || step.conf < this.lo)) this.rel[c] = n;
     }
+    // règle précoce
+    if (this.hi !== null && st.length >= this.run) {
+      let ok = true, mx = 0;
+      for (let q = 0; q < this.run; q++) {
+        const s = st[st.length - 1 - q];
+        if (s.conf < this.hi || s.cls !== step.cls) { ok = false; break; }
+        if (s.conf > mx) mx = s.conf;
+      }
+      const a = n - this.run + 1;
+      if (ok && !this._blocked(step.cls, a)) {
+        this._emit(st[a - n0], mx, true);
+        this.last[step.cls] = { a, conf: mx }; this.rel[step.cls] = -1;
+        this.early.push(a); if (this.early.length > 4) this.early.shift();
+      }
+    }
+    // règle du sommet : au moins le seuil, pas dépassé dans le passé proche, strictement dominant sur le futur proche
+    const i = n - h;
+    if (i < n0) return;
+    const s = st[i - n0];
+    if (s.conf < this.thr) return;
+    for (let j = Math.max(n0, i - h); j < i; j++) if (st[j - n0].conf > s.conf) return;
+    for (let j = i + 1; j <= n; j++) if (st[j - n0].conf >= s.conf) return;
+    if (this.early.some((e) => i < e && e <= n)) return;         // une détection précoce a démarré pendant l'attente : elle l'emporte
+    if (this._blocked(s.cls, i)) return;
+    this._emit(s, s.conf, false);
+    this.last[s.cls] = { a: i, conf: s.conf }; this.rel[s.cls] = -1;
+    for (let j = i + 1; j <= n; j++) { const q = st[j - n0]; if (q.cls !== s.cls || q.conf < this.lo) { this.rel[s.cls] = j; break; } }
   }
 }
 
@@ -173,7 +219,7 @@ export class Follower {
     this.exp = expected; this.N = expected.length;
     this.SUB = SUB; this.DEL = DEL; this.maxSkip = maxSkip;
     this.cost = new Float64Array(this.N + 1).fill(Infinity); this.cost[0] = 0;
-    this.prevCost = null; this.back = []; this.dets = [];
+    this.back = []; this.dets = []; this.ins = [];
   }
   static insCost(d) { return 0.3 + 0.6 * d.conf; }
   push(d, insCost) {
@@ -192,7 +238,7 @@ export class Follower {
         if (v < nw[j + 1] - 1e-12) { nw[j + 1] = v; bp[j + 1] = [k, ok ? 'ok' : 'sub', skip]; }
       }
     }
-    this.prevCost = this.cost; this.cost = nw; this.back.push(bp); this.dets.push(d);
+    this.cost = nw; this.back.push(bp); this.dets.push(d); this.ins.push(insCost ?? null);
   }
   best() {
     let bk = 0, bv = Infinity;
@@ -214,14 +260,29 @@ export class Follower {
     }
     return v;
   }
-  // Dernière syllabe restée sans note alors qu'elle était nette : on la compte comme réponse (fausse).
-  commitLast(minConf = 0.9) {
-    const n = this.dets.length;
-    if (!n || this.best() >= this.N) return false;
-    const k = this.best(), [, op] = this.back[n - 1][k], d = this.dets[n - 1];
-    if (op !== 'ins' || d.conf < minConf) return false;
-    this.cost = this.prevCost; this.back.pop(); this.dets.pop();
-    this.push(d, 2);
+  // Syllabe nette restée sans note en fin de chemin : {note, det}, ou null. C'est une réponse fausse probable :
+  // l'app colore la note tout de suite, et l'alignement tranche à la syllabe suivante (correction ou note suivante).
+  pending(minConf = 0.9) {
+    let k = this.best();
+    if (k >= this.N) return null;
+    const note = k;
+    for (let i = this.back.length - 1; i >= 0; i--) {
+      const [kp, op] = this.back[i][k];
+      if (op !== 'ins') return null;
+      if (this.dets[i].conf >= minConf) return { note, det: this.dets[i], index: i };
+      k = kp;
+    }
+    return null;
+  }
+  // Après un silence, la syllabe en attente compte comme réponse : l'alignement est rejoué sans pouvoir l'écarter.
+  commitPending(minConf = 0.9) {
+    const p = this.pending(minConf);
+    if (!p) return false;
+    const dets = this.dets, ins = this.ins;
+    ins[p.index] = 2;
+    this.cost = new Float64Array(this.N + 1).fill(Infinity); this.cost[0] = 0;
+    this.back = []; this.dets = []; this.ins = [];
+    for (let q = 0; q < dets.length; q++) this.push(dets[q], ins[q] ?? undefined);
     return true;
   }
 }

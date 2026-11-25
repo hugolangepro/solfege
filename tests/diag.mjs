@@ -33,4 +33,8 @@ console.log(`micro : ${JSON.stringify(meta.micro)} · contexte ${meta.rate} Hz �
 console.log(`attendu  : ${meta.attendu.join(' ')}`);
 console.log(`entendu  : ${meta.entendu.map((e) => `${e[1]}(${e[2]})`).join(' ')}`);
 console.log(`verdicts : ${meta.verdicts.map((q) => (q === 'ok' ? '·' : q === 'faux' ? 'F' : q === 'manque' ? '?' : '_')).join('')}`);
+const ms = (q, k) => (q ? `médiane ${(q.med * k).toFixed(1)}, 95 % sous ${(q.p95 * k).toFixed(1)}, max ${(q.max * k).toFixed(1)} ms` : 'non mesuré');
+const dl = meta.entendu.map((e) => e[3]).filter((v) => v !== undefined).sort((a, b) => a - b);
+if (dl.length) console.log(`reconnaissance : ${meta.entendu.filter((e) => e[4]).length} syllabes sur ${meta.entendu.length} sans attendre le sommet ; son écoulé avant reconnaissance : médiane ${dl[dl.length >> 1]} ms, max ${dl[dl.length - 1]} ms`);
+console.log(`du micro à l'app : ${ms(meta.livraison, 1000)} ; dessin de la page : ${ms(meta.dessin, 1)}`);
 console.log(`rejeu : ${heard.length} syllabes, ${v.filter((q) => q === 'ok').length} notes justes ; app : ${meta.entendu.length} syllabes, ${meta.verdicts.filter((q) => q === 'ok').length} notes justes ; mêmes syllabes aux mêmes instants : ${memes}`);
