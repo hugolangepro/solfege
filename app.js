@@ -4,7 +4,7 @@ import { GLYPHS } from './glyphs.js';
 import { Pitch } from './pitch.js';
 import { buildIntervals, midiOf, nomIntervalle, Hold, NIVEAUX } from './chant.js';
 
-const VERSION = '2026-11-25.6';
+const VERSION = '2026-11-25.7';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
@@ -461,12 +461,12 @@ async function shareAudio() {
 // Trois temps, sans chronomètre. Écoute : la note de référence sonne (toucher la portée la rejoue). Vise : tu cherches
 // la seconde note, la courbe bleue montre ta voix sur la portée, rien n'est jugé. Tiens : la note compte après TENUE ms
 // dans la bande de ±TOL cents, à l'octave près.
-let WAVE = null;
 function playRef() {
   const ctx = S.ctx, it = S.items[S.i];
-  if (!WAVE) WAVE = ctx.createPeriodicWave(new Float32Array([0, 0, 0, 0, 0, 0, 0]), new Float32Array([0, 1, 0.45, 0.25, 0.12, 0.06, 0.03]));
+  // le timbre appartient au contexte audio de la séance : un par séance
+  if (!S.wave) S.wave = ctx.createPeriodicWave(new Float32Array([0, 0, 0, 0, 0, 0, 0]), new Float32Array([0, 1, 0.45, 0.25, 0.12, 0.06, 0.03]));
   const t0 = ctx.currentTime + 0.03, osc = ctx.createOscillator(), g = ctx.createGain(), d = REF_MS / 1000;
-  osc.setPeriodicWave(WAVE); osc.frequency.value = 440 * 2 ** ((midiOf(it.ref) - 69) / 12);
+  osc.setPeriodicWave(S.wave); osc.frequency.value = 440 * 2 ** ((midiOf(it.ref) - 69) / 12);
   g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(0.3, t0 + 0.012);
   g.gain.exponentialRampToValueAtTime(0.12, t0 + d * 0.8); g.gain.linearRampToValueAtTime(0, t0 + d);
   osc.connect(g); g.connect(ctx.destination); osc.start(t0); osc.stop(t0 + d + 0.05);

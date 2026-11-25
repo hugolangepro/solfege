@@ -69,6 +69,10 @@ async def main():
             for r, (a, bb) in zip(st['results'], ITEMS):
                 print('   %2d → %2d : trouvé en %4d ms, écart médian %+d cents, référence captée par le micro %.3f' % (r['ref'], r['cible'], r['ms'], r['cents'], r['refRms']))
             print('résultat affiché :', res.replace('\n', ' / '), '| séance gardée :', {k: saved[k] for k in ('mode', 'input', 'niveau', 'n', 'ok', 'tol', 'tenue')}, saved['items'][:2], '| fichier de diagnostic :', diag, '| erreurs :', errs)
+            # « Encore » : une seconde séance dans la même page, avec un nouveau contexte audio
+            await pg.click('#again'); await pg.wait_for_timeout(1800)
+            again = await pg.evaluate("() => { const s = window.__solfege.session; return s && [s.over, s.phase, s.i, s.results.length]; }")
+            print('« Encore » : nouvelle séance', again, '| erreurs :', errs)
             # réécoute : toucher la portée pendant la recherche rejoue la référence
             pg2 = await ctx.new_page()
             await pg2.goto(base + '?exo=chant&items=-2:0'); await pg2.wait_for_timeout(500); await pg2.click('#go'); await pg2.wait_for_timeout(1500)
