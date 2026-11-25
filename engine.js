@@ -29,6 +29,12 @@ export function loadModel(j) {
   let ws = 0; for (let n = 0; n < N; n++) ws += m.window[n];
   m.winNorm = 1 / (ws * ws);
   m.hidden = m.b1.length; m.nOut = m.b2.length; m.nIn = m.b.length;
+  if (j.gate) {
+    const g = { ...j.gate };
+    for (const k of ['A', 'b', 'W1', 'b1', 'W2', 'b2']) g[k] = b64f32(j.gate[k]);
+    g.k = g.b.length; g.h = g.b1.length;
+    m.gate = g;
+  }
   return m;
 }
 
@@ -76,29 +82,87 @@ export class Resampler {
   }
 }
 
-// Détecteur de syllabes en flux : reçoit du son à 16 kHz, émet des candidats {frame, time, cls, conf, early}.
-// Deux règles d'émission, sur la probabilité de la meilleure syllabe calculée tous les 20 ms :
+// Règles d'émission d'une détection, sur la probabilité de la meilleure syllabe calculée tous les 20 ms :
 // - précoce : dès `run` pas de suite au-dessus de `hi` pour la même syllabe, sans attendre le sommet ;
 // - sommet : maximum local au-dessus de `thr`, confirmé `half` pas plus tard (pour les syllabes moins nettes).
 // Une détection nette (≥ strong) bloque les suivantes de la même syllabe pendant `refr` pas et tant que
 // la probabilité n'est pas retombée (autre syllabe ou < lo) : une syllabe dite ne compte qu'une fois.
-export class Recognizer {
-  constructor(model, { thr = 0.3, half = 8, hi = 0.95, run = 2, lo = 0.5, refr = 10, strong = 0.9 } = {}) {
-    this.m = model; this.thr = thr; this.half = half;
-    this.hi = hi; this.run = run; this.lo = lo; this.refr = refr; this.strong = strong;
-    this.n0 = 0;                                  // rang du premier pas gardé dans this.steps
+class Emitter {
+  constructor({ thr = 0.3, half = 8, hi = 0.95, run = 2, lo = 0.5, refr = 10, strong = 0.9 } = {}) {
+    this.thr = thr; this.half = half; this.hi = hi; this.run = run; this.lo = lo; this.refr = refr; this.strong = strong;
+    this.steps = []; this.n0 = 0;                 // derniers pas, et rang du premier gardé
     this.last = new Array(7).fill(null);          // par syllabe : {a: rang du pas, conf} de la dernière détection
     this.rel = new Array(7).fill(-1);             // par syllabe : rang du premier relâchement depuis, ou -1
     this.early = [];                              // rangs des dernières détections précoces
+  }
+  _blocked(c, idx) {
+    const L = this.last[c];
+    if (!L || L.conf < this.strong) return false;
+    if (idx - L.a < this.refr) return true;
+    return this.rel[c] < 0 || this.rel[c] > idx;
+  }
+  // Reçoit un pas {frame, cls, conf}, rend les détections qu'il déclenche : [{frame, cls, conf, early}].
+  step(step) {
+    const out = [], st = this.steps, h = this.half;
+    st.push(step);
+    if (st.length > 4 * h + 8) { const drop = st.length - (2 * h + 2); st.splice(0, drop); this.n0 += drop; }
+    const n0 = this.n0, n = n0 + st.length - 1;                 // rang de ce pas depuis le début
+    // relâchement : la syllabe détectée a cédé la place
+    for (let c = 0; c < 7; c++) {
+      const L = this.last[c];
+      if (L && this.rel[c] < 0 && n > L.a && (step.cls !== c || step.conf < this.lo)) this.rel[c] = n;
+    }
+    // règle précoce
+    if (this.hi !== null && st.length >= this.run) {
+      let ok = true, mx = 0;
+      for (let q = 0; q < this.run; q++) {
+        const s = st[st.length - 1 - q];
+        if (s.conf < this.hi || s.cls !== step.cls) { ok = false; break; }
+        if (s.conf > mx) mx = s.conf;
+      }
+      const a = n - this.run + 1;
+      if (ok && !this._blocked(step.cls, a)) {
+        out.push({ frame: st[a - n0].frame, cls: step.cls, conf: mx, early: true });
+        this.last[step.cls] = { a, conf: mx }; this.rel[step.cls] = -1;
+        this.early.push(a); if (this.early.length > 4) this.early.shift();
+      }
+    }
+    // règle du sommet : au moins le seuil, pas dépassé dans le passé proche, strictement dominant sur le futur proche
+    const i = n - h;
+    if (i < n0) return out;
+    const s = st[i - n0];
+    if (s.conf < this.thr) return out;
+    for (let j = Math.max(n0, i - h); j < i; j++) if (st[j - n0].conf > s.conf) return out;
+    for (let j = i + 1; j <= n; j++) if (st[j - n0].conf >= s.conf) return out;
+    if (this.early.some((e) => i < e && e <= n)) return out;      // une détection précoce a démarré pendant l'attente : elle l'emporte
+    if (this._blocked(s.cls, i)) return out;
+    out.push({ frame: s.frame, cls: s.cls, conf: s.conf, early: false });
+    this.last[s.cls] = { a: i, conf: s.conf }; this.rel[s.cls] = -1;
+    for (let j = i + 1; j <= n; j++) { const q = st[j - n0]; if (q.cls !== s.cls || q.conf < this.lo) { this.rel[s.cls] = j; break; } }
+    return out;
+  }
+}
+
+// Détecteur de syllabes en flux : reçoit du son à 16 kHz, émet des détections {frame, time, cls, conf, early}.
+// Deux petits réseaux lisent la même image de 300 ms : le modèle des syllabes (laquelle ?) et, s'il est fourni,
+// le filtre (est-ce une syllabe dite, ou un autre son : touche de clavier, choc, souffle ?). Une détection n'est émise
+// par onCandidate que si le filtre laisse passer ses pas. onRaw reçoit les détections du modèle des syllabes seul :
+// l'app s'en sert pour vérifier que le filtre n'écarte pas la voix.
+export class Recognizer {
+  constructor(model, opts = {}) {
+    this.m = model;
+    this.em = new Emitter(opts);
+    this.raw = model.gate ? new Emitter(opts) : null;
+    this.tau = opts.tau ?? (model.gate ? model.gate.tau : 0);
     this.buf = new Float32Array(0); this.bufStart = 0; this.frame = 0;
     this.R = 64; this.mel = new Float64Array(this.R * model.n_mels);
     this.rms3 = [0, 0, 0];
     this.LW = model.level.window; this.med = new Float32Array(this.LW);
-    this.steps = []; this.stepBase = 0;
     this.x = new Float64Array(model.A.length / model.nIn); this.z = new Float64Array(model.nIn);
     this.hid = new Float64Array(model.hidden); this.out = new Float64Array(model.nOut);
+    if (model.gate) { this.gz = new Float64Array(model.gate.k); this.gh = new Float64Array(model.gate.h); }
     this.re = new Float32Array(model.n_fft);
-    this.onCandidate = null; this.onLevel = null; this.onStep = null;
+    this.onCandidate = null; this.onRaw = null; this.onLevel = null; this.onStep = null;
   }
   get time() { return this.frame * this.m.hop / this.m.sr; }
   get clock() { return (this.frame * this.m.hop + this.m.n_fft) / this.m.sr; }   // fin de la trame en cours de calcul
@@ -147,9 +211,11 @@ export class Recognizer {
       for (let j = 0; j < nm; j++) { const v = Math.log(g2 * this.mel[row + j] + 1e-10); x[t * nm + j] = v; mean += v; }
     }
     mean /= T * nm;
+    for (let i = 0; i < T * nm; i++) x[i] -= mean;
+    // modèle des syllabes
     const nIn = m.nIn, z = this.z;
     for (let c = 0; c < nIn; c++) z[c] = m.b[c];
-    for (let i = 0; i < T * nm; i++) { const v = x[i] - mean, o = i * nIn; for (let c = 0; c < nIn; c++) z[c] += v * m.A[o + c]; }
+    for (let i = 0; i < T * nm; i++) { const v = x[i], o = i * nIn; for (let c = 0; c < nIn; c++) z[c] += v * m.A[o + c]; }
     const H = m.hidden, hid = this.hid;
     for (let u = 0; u < H; u++) hid[u] = m.b1[u];
     for (let c = 0; c < nIn; c++) { const v = z[c], o = c * H; for (let u = 0; u < H; u++) hid[u] += v * m.W1[o + u]; }
@@ -160,56 +226,24 @@ export class Recognizer {
     let sum = 0; for (let q = 0; q < Q; q++) { out[q] = Math.exp(out[q] - mx); sum += out[q]; }
     let cls = 0, conf = -1;
     for (let q = 0; q < Q - 1; q++) { const p = out[q] / sum; if (p > conf) { conf = p; cls = q; } }
-    this._step({ frame: f, cls, conf });
-  }
-  _emit(s, conf, early) {
-    const m = this.m;
-    if (this.onCandidate) this.onCandidate({ frame: s.frame, time: (s.frame * m.hop + m.n_fft / 2) / m.sr, cls: s.cls, conf, early });
-  }
-  _blocked(c, idx) {
-    const L = this.last[c];
-    if (!L || L.conf < this.strong) return false;
-    if (idx - L.a < this.refr) return true;
-    return this.rel[c] < 0 || this.rel[c] > idx;
-  }
-  _step(step) {
+    // filtre : probabilité que l'image soit une syllabe dite
+    let voice = 1;
+    const G = m.gate;
+    if (G) {
+      const gz = this.gz, gh = this.gh, K = G.k, Hg = G.h;
+      for (let c = 0; c < K; c++) gz[c] = G.b[c];
+      for (let i = 0; i < T * nm; i++) { const v = x[i], o = i * K; for (let c = 0; c < K; c++) gz[c] += v * G.A[o + c]; }
+      for (let u = 0; u < Hg; u++) gh[u] = G.b1[u];
+      for (let c = 0; c < K; c++) { const v = gz[c], o = c * Hg; for (let u = 0; u < Hg; u++) gh[u] += v * G.W1[o + u]; }
+      let y = G.b2[0];
+      for (let u = 0; u < Hg; u++) if (gh[u] > 0) y += gh[u] * G.W2[u];
+      voice = 1 / (1 + Math.exp(-y));
+    }
+    const step = { frame: f, cls, conf, voice };
     if (this.onStep) this.onStep(step);
-    const st = this.steps, h = this.half;
-    st.push(step);
-    if (st.length > 4 * h + 8) { const drop = st.length - (2 * h + 2); st.splice(0, drop); this.n0 += drop; }
-    const n0 = this.n0, n = n0 + st.length - 1;                 // rang de ce pas depuis le début
-    // relâchement : la syllabe détectée a cédé la place
-    for (let c = 0; c < 7; c++) {
-      const L = this.last[c];
-      if (L && this.rel[c] < 0 && n > L.a && (step.cls !== c || step.conf < this.lo)) this.rel[c] = n;
-    }
-    // règle précoce
-    if (this.hi !== null && st.length >= this.run) {
-      let ok = true, mx = 0;
-      for (let q = 0; q < this.run; q++) {
-        const s = st[st.length - 1 - q];
-        if (s.conf < this.hi || s.cls !== step.cls) { ok = false; break; }
-        if (s.conf > mx) mx = s.conf;
-      }
-      const a = n - this.run + 1;
-      if (ok && !this._blocked(step.cls, a)) {
-        this._emit(st[a - n0], mx, true);
-        this.last[step.cls] = { a, conf: mx }; this.rel[step.cls] = -1;
-        this.early.push(a); if (this.early.length > 4) this.early.shift();
-      }
-    }
-    // règle du sommet : au moins le seuil, pas dépassé dans le passé proche, strictement dominant sur le futur proche
-    const i = n - h;
-    if (i < n0) return;
-    const s = st[i - n0];
-    if (s.conf < this.thr) return;
-    for (let j = Math.max(n0, i - h); j < i; j++) if (st[j - n0].conf > s.conf) return;
-    for (let j = i + 1; j <= n; j++) if (st[j - n0].conf >= s.conf) return;
-    if (this.early.some((e) => i < e && e <= n)) return;         // une détection précoce a démarré pendant l'attente : elle l'emporte
-    if (this._blocked(s.cls, i)) return;
-    this._emit(s, s.conf, false);
-    this.last[s.cls] = { a: i, conf: s.conf }; this.rel[s.cls] = -1;
-    for (let j = i + 1; j <= n; j++) { const q = st[j - n0]; if (q.cls !== s.cls || q.conf < this.lo) { this.rel[s.cls] = j; break; } }
+    const emit = (cb, d) => { if (cb) cb({ frame: d.frame, time: (d.frame * m.hop + m.n_fft / 2) / m.sr, cls: d.cls, conf: d.conf, early: d.early }); };
+    for (const d of this.em.step({ frame: f, cls, conf: voice >= this.tau ? conf : 0 })) emit(this.onCandidate, d);
+    if (this.raw) for (const d of this.raw.step({ frame: f, cls, conf })) emit(this.onRaw, d);
   }
 }
 
@@ -259,6 +293,17 @@ export class Follower {
       k = kp;
     }
     return v;
+  }
+  // Les k dernières détections du meilleur chemin, de la plus ancienne à la plus récente : {op: 'ok' | 'sub' | 'ins', note, det}.
+  tail(k) {
+    const out = [];
+    let c = this.best();
+    for (let i = this.back.length - 1; i >= 0 && out.length < k; i--) {
+      const [kp, op, skip] = this.back[i][c];
+      out.push({ op, note: op === 'ins' ? null : kp + skip, det: this.dets[i] });
+      c = kp;
+    }
+    return out.reverse();
   }
   // Syllabe nette restée sans note en fin de chemin : {note, det}, ou null. C'est une réponse fausse probable :
   // l'app colore la note tout de suite, et l'alignement tranche à la syllabe suivante (correction ou note suivante).

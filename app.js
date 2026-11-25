@@ -2,7 +2,7 @@
 import { loadModel, Recognizer, Resampler, Follower, SYLLABES } from './engine.js';
 import { GLYPHS } from './glyphs.js';
 
-const VERSION = '2026-11-25.4';
+const VERSION = '2026-11-25.5';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
@@ -122,6 +122,11 @@ function layout() {
 // ---------- état ----------
 let S = null;                       // séance en cours
 let modelP = null;                  // promesse du modèle vocal
+// Le filtre « syllabe dite ou autre son » peut se tromper sur un micro qu'il ne connaît pas et écarter la voix. L'app le
+// surveille (voir watchGate) ; s'il est pris en défaut sur cet appareil, il reste coupé jusqu'au prochain modèle.
+let gateOff = null;                 // clé du modèle pour lequel le filtre a été coupé, ou null
+try { gateOff = (JSON.parse(localStorage.getItem('solfege.gate') || 'null') || {}).model || null; } catch (e) { /* stockage indisponible */ }
+const gateKey = (m) => (m.gate ? `${m.version}:${m.gate.trained}:${m.gate.tau}` : '');
 const prefs = { clef: 'sol', input: 'voix' };
 try { Object.assign(prefs, JSON.parse(localStorage.getItem('solfege.prefs') || '{}')); } catch (e) { /* préférences absentes */ }
 
@@ -217,12 +222,16 @@ async function start() {
       ctx = new AC({ latencyHint: 'interactive' });
       ctx.resume().catch(() => {});                       // dans le geste de l'utilisateur
       const model = await modelP;
-      const rs = new Resampler(ctx.sampleRate), rec = new Recognizer(model);
-      S = { ...base, follower: new Follower(notes.map((n) => n.cls)), rec, ctx, model, heard: [], pcm: [], pcmN: 0, level: 0, rate: ctx.sampleRate, tStart: Infinity,
+      const rs = new Resampler(ctx.sampleRate), rec = new Recognizer(model, params.has('tau') ? { tau: +params.get('tau') } : {});
+      const expected = notes.map((n) => n.cls), bypass = !model.gate || gateOff === gateKey(model);
+      S = { ...base, follower: new Follower(expected), rec, ctx, model, heard: [], pcm: [], pcmN: 0, level: 0, rate: ctx.sampleRate, tStart: Infinity,
+        // sans filtre : les détections du modèle des syllabes seul et leur propre suivi, pour surveiller le filtre
+        raw: [], shadow: bypass ? null : new Follower(expected), bypass,
         lag: DEBUG ? [] : null, draw: DEBUG ? [] : null };
       const mine = S;
       rec.onLevel = (rms) => { mine.level = rms; };
-      rec.onCandidate = (c) => onCandidate(mine, c);
+      rec.onCandidate = (c) => { if (!mine.bypass) onCandidate(mine, c); };
+      rec.onRaw = (c) => onRaw(mine, c);
       const audio = await openMic(ctx, (x, t) => {
         if (mine.over) return;
         // diagnostic : temps mis par un bloc de son pour aller du micro (horloge audio) jusqu'ici
@@ -269,6 +278,10 @@ function onCandidate(sess, c) {
   if (sess !== S || S.over || c.time < S.tStart) return;
   c.delay = S.rec.clock - c.time;                        // son écoulé depuis l'ancre de la syllabe au moment où elle est reconnue
   S.heard.push(c); S.follower.push(c);
+  afterPush();
+}
+
+function afterPush() {
   render(); debugLine();
   clearTimeout(S.commitT);
   const k = S.follower.best();
@@ -283,6 +296,33 @@ function onCandidate(sess, c) {
       if (S.follower.commitPending(RED_CONF)) { render(); if (S.follower.best() >= S.N) finish(); }
     }, k === S.N - 1 ? COMMIT_LAST_MS : COMMIT_MS);
   }
+}
+
+// Détection du modèle des syllabes seul, avant le filtre.
+function onRaw(sess, c) {
+  if (sess !== S || S.over || c.time < S.tStart) return;
+  if (S.bypass) { onCandidate(sess, c); return; }        // filtre coupé : tout passe
+  c.delay = S.rec.clock - c.time;
+  S.raw.push(c); S.shadow.push(c);
+  if (watchGate()) {
+    // Le filtre écartait la voix : le suivi sans filtre devient celui de la page, et le filtre reste coupé sur cet appareil.
+    S.bypass = true; S.follower = S.shadow; S.heard = S.raw; S.shadow = null;
+    gateOff = gateKey(S.model);
+    try { localStorage.setItem('solfege.gate', JSON.stringify({ model: gateOff, at: new Date().toISOString() })); } catch (e) { /* stockage indisponible */ }
+    afterPush();
+  }
+}
+
+// Le filtre est pris en défaut quand cinq détections de suite du modèle seul valident cinq notes de suite de la page
+// alors qu'il en a écarté au moins deux : un bruit ne lit pas la page dans l'ordre (une chance sur 7 par note), une voix si.
+// La toute dernière détection est laissée de côté, le temps que le filtre rende son avis sur elle.
+function watchGate() {
+  const t = S.shadow.tail(6);
+  if (t.length < 6) return false;
+  const w = t.slice(0, 5);
+  if (!w.every((q, i) => q.op === 'ok' && q.note === w[0].note + i)) return false;
+  const passed = (d) => S.heard.some((g) => g.cls === d.cls && Math.abs(g.frame - d.frame) <= 8);
+  return w.filter((q) => !passed(q.det)).length >= 2;
 }
 
 function onMidiNote(note) {
@@ -306,7 +346,8 @@ function debugLine() {
   if (!DEBUG || !S || S.input !== 'voix') return;
   const recent = S.heard.slice(-10), last = recent.map((c) => `${SYLLABES[c.cls]} ${c.conf.toFixed(2)}`).join(', ');
   const q = stats(S.lag), d = stats(S.draw);
-  $('debug').textContent = `v${VERSION} · ${S.rate} Hz · niveau ${S.level.toFixed(3)} · précoces ${recent.filter((c) => c.early).length}/${recent.length}`
+  const filtre = !S.model.gate ? 'absent' : S.bypass ? 'coupé' : `actif, ${S.raw.length - S.heard.length} écartées`;
+  $('debug').textContent = `v${VERSION} · ${S.rate} Hz · niveau ${S.level.toFixed(3)} · filtre ${filtre} · précoces ${recent.filter((c) => c.early).length}/${recent.length}`
     + ` · livraison ${q ? Math.round(q.med * 1000) : '?'} ms · dessin ${d ? d.med.toFixed(1) : '?'} ms · entendu : ${last}`;
 }
 
@@ -375,6 +416,9 @@ function diagFile() {
     // par syllabe entendue : instant (ms), syllabe, confiance, son écoulé avant la reconnaissance (ms), 1 si reconnue sans attendre le sommet
     entendu: S.heard.map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100, Math.round(c.delay * 1000), c.early ? 1 : 0]),
     livraison: stats(S.lag), dessin: stats(S.draw), clefs: S.notes.map((n) => (n.clef === 'fa' ? 1 : 0)),
+    // filtre « syllabe dite ou autre son » : son seuil, s'il a été coupé, et les détections du modèle seul (pour voir ce qu'il a écarté)
+    filtre: S.model.gate ? { tau: S.rec.tau, coupe: S.bypass, cle: gateKey(S.model) } : null,
+    brut: (S.bypass ? [] : S.raw).map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100]),
     verdicts: verdicts().map((q) => (q ? q.v : null)),
   };
   const json = new TextEncoder().encode(JSON.stringify(meta));
@@ -450,4 +494,4 @@ $('page').addEventListener('click', () => { if (S && !S.over && S.ctx && S.ctx.s
 window.addEventListener('resize', render);
 document.addEventListener('visibilitychange', () => { if (document.hidden && S && !S.over && S.input === 'voix') finish(); });
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
-window.__solfege = { VERSION, get session() { return S; }, verdicts, onMidiNote, diagFile };
+window.__solfege = { VERSION, get session() { return S; }, verdicts, onMidiNote, diagFile, get gateOff() { return gateOff; } };

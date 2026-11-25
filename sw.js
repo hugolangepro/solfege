@@ -1,5 +1,5 @@
 // Le réseau d'abord, en revalidant chaque fichier : une mise à jour arrive dès l'ouverture suivante. Le cache sert hors ligne.
-const CACHE = 'solfege-v3';
+const CACHE = 'solfege-v4';
 const CORE = ['./', 'index.html', 'app.js', 'engine.js', 'glyphs.js', 'worklet-2.js', 'model.json', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {

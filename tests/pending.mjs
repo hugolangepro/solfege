@@ -39,4 +39,7 @@ check('puis reconnue comme sautée', `${show(F)} | ${pend(F)}`, 'ok manque ok ok
 F = new Follower([0, 1, 2, 3]);
 F.push(d(0)); F.push(d(1)); F.push(d(6, 0.95)); F.push(d(2));
 check('bruit pris pour une syllabe entre deux notes justes : écarté', `${show(F)} | ${pend(F)}`, 'ok ok ok - | rien');
+F = new Follower([0, 1, 2, 3, 4, 5]);
+for (const c of [0, 1, 6, 2, 3]) F.push(d(c));
+check('fin du chemin, de la plus ancienne à la plus récente', F.tail(4).map((q) => `${q.op}${q.note ?? ''}`).join(' '), 'ok1 ins ok2 ok3');
 process.exit(ok ? 0 : 1);

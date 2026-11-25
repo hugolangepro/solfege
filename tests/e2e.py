@@ -8,8 +8,11 @@ from serveur import serveur
 ICI = os.path.dirname(os.path.abspath(__file__))
 SEQ = open(os.path.join(ICI, 's13_seq.txt')).read().strip().split(',')
 WAV = os.environ.get('SOLFEGE_WAV', os.path.join(ICI, 's13_48k.wav'))
-ARGS = ['--no-sandbox', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
-        f'--use-file-for-fake-audio-capture={WAV}%noloop', '--autoplay-policy=no-user-gesture-required']
+BRUIT = os.path.join(ICI, 'clavier_44k.wav')          # frappe au clavier (ESC-50, pour l'essai seulement ; hors dépôt)
+def args_for(wav):
+    return ['--no-sandbox', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
+            f'--use-file-for-fake-audio-capture={wav}%noloop', '--autoplay-policy=no-user-gesture-required']
+ARGS = args_for(WAV)
 DIAG_JS = '''async () => { const f = window.__solfege.diagFile(); if (!f) return null;
   const u = new Uint8Array(await f.arrayBuffer()); let s = '';
   for (let i = 0; i < u.length; i += 8192) s += String.fromCharCode.apply(null, u.subarray(i, i + 8192));
@@ -22,15 +25,15 @@ WATCH_JS = '''() => { window.__log = [];
     window.__log.push({ t: performance.now(), heard: s.heard.length, reds, texts: document.querySelectorAll('#systems text').length, ellipses: document.querySelectorAll('#systems ellipse').length }); };
   new MutationObserver(snap).observe(document.getElementById('systems'), { childList: true }); }'''
 
-async def run(base, name, seq, viewport, wait_s, shots=True, debug=False, clef=None):
+async def run(base, name, seq, viewport, wait_s, shots=True, debug=False, clef=None, wav=None, extra=''):
     async with async_playwright() as p:
-        b = await p.chromium.launch(channel='chrome', args=ARGS)
+        b = await p.chromium.launch(channel='chrome', args=args_for(wav) if wav else ARGS)
         ctx = await b.new_context(viewport=viewport, device_scale_factor=2, permissions=['microphone'])
         pg = await ctx.new_page()
         errs = []
         pg.on('pageerror', lambda e: errs.append(str(e)))
         pg.on('console', lambda m: errs.append('console: ' + m.text) if m.type == 'error' else None)
-        await pg.goto(base + '?seq=' + urllib.parse.quote(','.join(seq)) + ('&debug' if debug else ''))
+        await pg.goto(base + '?seq=' + urllib.parse.quote(','.join(seq)) + ('&debug' if debug else '') + extra)
         await pg.wait_for_timeout(800)
         if clef: await pg.click(f'#clef button[data-v="{clef}"]')
         if shots: await pg.screenshot(path=os.path.join(ICI, f'{name}_accueil.png'))
@@ -41,6 +44,7 @@ async def run(base, name, seq, viewport, wait_s, shots=True, debug=False, clef=N
         await pg.wait_for_timeout(int(wait_s * 1000) - 11000)
         state = await pg.evaluate('''() => { const s = window.__solfege.session; if (!s) return null;
             return { over: s.over, rate: s.rate, n: s.N, heard: s.heard.length, tStart: s.tStart, version: window.__solfege.VERSION,
+                     raw: s.raw.length, bypass: s.bypass, gateOff: window.__solfege.gateOff, stored: localStorage.getItem('solfege.gate'),
                      v: window.__solfege.verdicts().map(q => q ? q.v + (q.v === 'faux' ? ':' + q.cls : '') : null) }; }''')
         result = await pg.inner_text('#result')
         if shots: await pg.screenshot(path=os.path.join(ICI, f'{name}_fin.png'))
@@ -128,6 +132,16 @@ async def main():
         v = st['v'] if st else []
         r = stored[-1]
         print('F. système de piano à la voix :', sum(x == 'ok' for x in v), 'justes sur', len(v), '|', res.replace('\n', ' / '), '| mode gardé :', r['mode'], '| clés des 8 premières notes :', [q[0] for q in r['notes'][:8]], '| erreurs :', errs)
+
+        if os.path.exists(BRUIT):
+            for nom, extra in (('filtre actif', ''), ('filtre retiré', '&tau=0')):
+                st, res, errs, stored, diag, share, log, heard = await run(base, 'bruit', SEQ, phone, 26, shots=False, wav=BRUIT, extra=extra)
+                v = st['v'] if st else []
+                print('G. 30 s de frappe au clavier, sans un mot, %s : %d notes validées, %d fausses, %d syllabes entendues (%d par le modèle seul) ; notes passées au rouge en cours de page : %d | erreurs : %s' % (
+                    nom, sum(x == 'ok' for x in v), sum(bool(x) and x.startswith('faux') for x in v), st['heard'], st['raw'], len({j for e in log for j in e['reds']}), errs))
+        st, res, errs, stored, diag, share, log, heard = await run(base, 'secours', SEQ, phone, 24, shots=False, extra='&tau=1.1')
+        v = st['v'] if st else []
+        print('H. filtre qui écarterait toute la voix (seuil forcé à 1,1) :', sum(x == 'ok' for x in v), 'justes sur', len(v), '|', res.replace('\n', ' / '), '| filtre coupé :', st['bypass'], '| mémorisé :', st['stored'], '| erreurs :', errs)
 
         pris, portee, titre, modele, msg, n, errs = await service_worker(base, proc)
         print('E. service worker : page prise en charge', pris, '| portée', portee.replace(base, '…/solfege/'), '| serveur éteint → titre', repr(titre), '| modèle version', modele, '| message', repr(msg), '| page de', n, 'notes | erreurs :', errs)

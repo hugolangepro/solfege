@@ -32,6 +32,7 @@ L'app revalide ses fichiers à chaque ouverture : la nouvelle version arrive au 
   Une syllabe est reconnue dès que le modèle la donne à 95 % deux pas de suite (40 ms), sans attendre le sommet ; les syllabes moins nettes passent par le sommet confirmé 160 ms plus tard.
 - `worklet-2.js` : relais du micro (`worklet.js` reste servi pour une page ouverte avant la mise à jour).
 - `model.json` : modèle vocal entraîné sur la voix d'Hugo (séance de mesure du 25 novembre 2026). Sept syllabes et une classe de rejet.
+  Depuis la version 3, il porte aussi un filtre « syllabe dite ou autre son » : un second petit réseau sur la même image de 300 ms, qui laisse intact le modèle des syllabes.
 - `sw.js`, `manifest.webmanifest`, `icons/` : installation et usage hors ligne.
 - `outils/` : scripts Python qui ont produit le modèle. Ils demandent l'enregistrement de la séance de mesure, qui n'est pas dans ce dépôt.
 - `tests/` : contrôles du moteur sous Node et de l'app dans Chrome (`python3 tests/e2e.py`, `python3 tests/e2e_midi.py`), servie sous `/solfege/` comme en ligne. Eux aussi demandent l'enregistrement.
@@ -41,6 +42,20 @@ L'app revalide ses fichiers à chaque ouverture : la nouvelle version arrive au 
 - Note validée : elle passe en gris. Note fausse : elle passe en rouge. Aucun texte sous les notes.
 - À la voix, une syllabe nette qui n'est pas la note attendue colore la note en rouge tout de suite. La syllabe suivante tranche : la bonne note la valide (correction), la note d'après la confirme fausse. Un silence de 2,5 s (1,2 s sur la dernière note) la confirme aussi.
 - Une note que le micro n'a pas entendue reste noire ; elle ne compte ni juste ni fausse.
+
+## Bruits
+
+Sans filtre, le modèle des syllabes se déclenche sur presque tout son bref : il n'a appris que la voix. Le filtre a appris à
+séparer les syllabes de l'enregistrement, passées par des pièces et des micros simulés, de bruits de synthèse (clics, coups,
+souffles, bips, notes qui s'éteignent : `outils/synth_noise.py`). Aucun enregistrement tiers n'entre dans son entraînement.
+
+Mesure sur 90 minutes de sons réels qu'il n'a jamais vus (jeu ESC-50, 27 classes, non fourni : licence CC BY-NC, utilisé pour
+l'évaluation seulement, `node tests/bruits.mjs`) : 1,2 syllabe nette entendue à tort par minute, contre 21 sans filtre ;
+frappe au clavier d'ordinateur : 0,3 par minute contre 57. La voix passe à plus de 98 % dans les conditions simulées
+(réverbération, bruit de fond, bande passante réduite) et la lecture de l'enregistrement de mesure est inchangée.
+
+Garde-fou dans l'app : si cinq détections de suite du modèle seul valident cinq notes de suite alors que le filtre en a écarté
+au moins deux, c'est la voix qu'il écarte. Il est alors coupé sur cet appareil (clé `solfege.gate`) jusqu'au prochain modèle.
 
 ## Chiffres de référence
 
