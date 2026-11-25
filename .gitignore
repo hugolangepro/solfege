@@ -1,0 +1,4 @@
+tests/*.wav
+tests/*.png
+__pycache__/
+.DS_Store
