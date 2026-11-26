@@ -1,6 +1,6 @@
 // Chant : intervalles tirés, place d'une hauteur sur la portée, jugement de la tenue sur des voix de synthèse.
 import { Pitch } from '../pitch.js';
-import { tirerIntervalle, tirerPortee, tirerAccord, chiffrage, ACCORDS, INTERVALLES, sensDe, midiOf, Hold } from '../chant.js';
+import { tirerIntervalle, tirerPortee, tirerAccord, tirerGamme, memesNotes, GAMMES, chiffrage, ACCORDS, INTERVALLES, sensDe, midiOf, Hold } from '../chant.js';
 import { Suivi, Follower } from '../engine.js';
 let ok = true;
 const check = (name, got, want) => { const good = String(got) === String(want); ok = ok && good; console.log(`${good ? 'ok ' : 'ÉCHEC'} ${name} : ${got}${good ? '' : `  (attendu : ${want})`}`); };
@@ -24,6 +24,10 @@ let s = 7; const rnd = () => { s = (s * 16807) % 2147483647; return s / 21474836
   check('un seul intervalle choisi, descendant', [1, 2, 3].map(() => { const q = tirerIntervalle({ iv: [6], montant: false, descendant: true }, rnd); return q.st * q.sens; }).join(), '-6,-6,-6');
   check('chiffrages en do', ACCORDS.map((a) => chiffrage(0, a.id)).join(' '), 'C C– C+ C° Csus4 C–7 C∆7 C7 C–∆7 C6');
   check('fondamentales altérées', [1, 6, 8, 10].map((q) => ['maj7', 'm7', '7'].map((id) => chiffrage(q, id)).join(' ')).join(' | '), 'D♭∆7 C♯–7 D♭7 | G♭∆7 F♯–7 F♯7 | A♭∆7 A♭–7 A♭7 | B♭∆7 B♭–7 B♭7');
+  { let bon = true; for (let i = 0; i < 2000; i++) { const g = tirerGamme({ types: GAMMES.map((q) => q.id), montant: true, descendant: true }, rnd), n = GAMMES.find((q) => q.id === g.id).tons.length + 1;
+      bon = bon && g.notes.length === n && g.notes[g.sens > 0 ? 0 : n - 1] === g.ref && Math.abs(g.notes[n - 1] - g.notes[0]) === 12 && g.ref >= 48 && g.ref < 60; }
+    check('2000 gammes tirées : de la tonique à l\'octave, dans les deux sens', bon, true); }
+  check('mêmes notes sous deux noms', [memesNotes('majeure', 'ionien'), memesNotes('mineure', 'eolien'), memesNotes('majeure', 'lydien')].join(), 'true,true,false');
   check('noms', [5, 6, 7, 10].map((st) => `${INTERVALLES[st].nom} ${sensDe(st, 1)}`).join(', '), 'quarte montante, triton montant, quinte montante, septième mineure montante');
 }
 {

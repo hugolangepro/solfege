@@ -8,7 +8,7 @@ Adresse : https://hugolangepro.github.io/solfege/
 
 - iPhone : ouvrir l'adresse dans Safari, puis Partager › Sur l'écran d'accueil. Lancer ensuite l'app depuis l'écran d'accueil : ses données sont séparées de celles de Safari.
 - Mac : ouvrir l'adresse dans Chrome (le MIDI n'existe pas dans Safari), puis Installer.
-- L'accueil liste les exercices : Lecture (Notes, Intervalles) et Chant (Intervalles, Portée, Accords). Un exercice ne s'arrête pas :
+- L'accueil liste les exercices : Lecture (Notes, Intervalles), Chant (Intervalles, Portée, Accords, Gammes) et Reconnaissance (Intervalles, Accords, Gammes). Un exercice ne s'arrête pas :
   il tourne jusqu'à ce qu'on le quitte (×). « Réglages », en haut de l'exercice, le met en attente et ne montre que les
   réglages de cet exercice ; à la fermeture il reprend, ou repart avec les nouveaux réglages. On change d'exercice depuis l'accueil.
 - Cinq touches rapides sur le titre activent le mode diagnostic : syllabes entendues à l'écran, et partage du son de la séance depuis les réglages.
@@ -47,7 +47,7 @@ L'app revalide ses fichiers à chaque ouverture : la nouvelle version arrive au 
 - `pitch.js` : hauteur de la voix en flux (méthode de McLeod après un passe-bas à 1 kHz), une mesure toutes les 10 ms.
 - `chant.js` : chant. Tirage des intervalles, des notes sur la portée et des accords ; chiffrages ; jugement de la tenue.
 - `portee.js` : dessin des portées, des notes, des altérations.
-- `noms.js` : noms d'intervalles dits à voix haute, appris sur l'appareil.
+- `noms.js`, `noms.json` : noms d'intervalles dits à voix haute ; la voix de départ, et l'apprentissage sur l'appareil.
 - `piano.js`, `piano/` : quatorze notes de piano enregistrées (voir NOTICE), transposées d'un demi-ton et demi au plus.
 - `worklet-2.js` : relais du micro (`worklet.js` reste servi pour une page ouverte avant la mise à jour).
 - `model.json` : modèle vocal entraîné sur la voix d'Hugo (séance de mesure du 25 novembre 2026). Sept syllabes et une classe de rejet.
@@ -97,16 +97,39 @@ Deux notes à la suite sur la portée (clé de sol, clé de fa ou les deux, inte
 Le bon nom grise les notes et amène l'intervalle suivant ; un autre nom les met en rouge jusqu'à la bonne réponse. Seule la
 première réponse compte dans la cadence et la justesse.
 
-La reconnaissance des noms s'apprend sur l'appareil (`noms.js`). Sans voix apprise, l'exercice ouvre l'écran d'enregistrement :
-44 noms affichés un par un (les onze intervalles, quatre fois chacun, dans le désordre), un toutes les 2,5 s. À la fin, la série
-est découpée en énoncés (niveau au-dessus du fond sonore, 0,32 s de silence pour finir), chaque énoncé est réduit à 12 coefficients
-cepstraux par centième de seconde, et gardé comme exemple dans `solfege.noms` (quatre séries au plus). Un fichier déjà partagé
-par cet écran s'importe de la même façon. En exercice, chaque énoncé prend le nom de l'exemple le plus proche par alignement
-temporel (DTW) ; au-delà de 1,2 fois la plus grande distance observée entre exemples d'un même nom, il est ignoré.
+Réponse à la voix ou au toucher (réglages) : au toucher, sans micro, les noms des intervalles cochés sont proposés sous la portée.
 
-Rien ne quitte l'appareil : ni le son, ni les exemples. Chaque appareil apprend avec son propre micro.
-Mesure sur la première série d'Hugo (Mac, micro intégré) : trois dictions de chaque nom pour apprendre, la quatrième pour
-essayer, 44 noms sur 44 ; dans Chrome, l'enregistrement rejoué comme micro, 44 premières réponses justes sur 44.
+À la voix, chaque nom dit est comparé à des exemples par alignement temporel (`noms.js`). L'app est livrée avec une voix de
+départ, `noms.json` : 122 exemples tirés de trois séries d'Hugo (Mac, AirPods, iPhone), chacun réduit à 12 coefficients cepstraux
+centrés par centième de seconde, sur un octet. Ce ne sont pas des sons, mais ils viennent de sa voix : le fichier est public
+comme le reste du dépôt. `outils/noms_modele.mjs` le refabrique à partir des séries (hors dépôt) et affiche ce que vaut la
+reconnaissance. Des séries enregistrées ou importées sur l'appareil (réglages › « Enregistrer une série de plus ») s'ajoutent
+à cette voix et restent sur l'appareil (`solfege.noms`, quatre au plus).
+
+Le score d'un nom est la moyenne de ses deux exemples les plus proches. Un énoncé est ignoré si son score dépasse 1,08 fois le
+plus grand score d'un nom retrouvé à la vérification, ou si le deuxième nom est à moins de 3 %. Pendant l'enregistrement, les
+noms avancent avec le son reçu, pas avec l'horloge : une coupure du micro ne décale plus le journal.
+
+Mesures (26 novembre) : chaque exemple contre les 121 autres, 117 noms retrouvés sur 122 ; chaque série reconnue avec les deux
+autres seulement, 43/44 (Mac), 44/44 (AirPods), 33/34 (iPhone).
+
+## Gammes et accords : une seule liste
+
+`ACCORDS` et `GAMMES` (dans `chant.js`) servent à tous les exercices : un accord ou une gamme ajouté à la liste apparaît dans les
+réglages de chaque exercice qui en utilise. Gammes : majeure, mineure, mineure harmonique, pentatoniques majeure et mineure, et
+les sept modes. Deux noms pour les mêmes notes (majeure et ionien, mineure et éolien) valent la même réponse.
+
+- Chant › Gammes : le nom de la gamme est écrit, la tonique sonne, on chante jusqu'à l'octave, en montant ou en descendant.
+  Mêmes règles que les autres exercices de chant ; « Écouter » joue la gamme.
+
+## Reconnaissance
+
+Le piano joue, on touche le nom de ce qu'on a entendu, parmi les réponses cochées dans les réglages. Sans micro.
+« Réécouter » rejoue. Une mauvaise réponse est barrée et l'on peut en toucher une autre ; seule la première compte.
+
+- Intervalles : les deux notes l'une après l'autre ou ensemble, en montant ou en descendant.
+- Accords : les notes ensemble ou l'une après l'autre.
+- Gammes : de la tonique à l'octave, en montant ou en descendant.
 
 ## Bruits
 

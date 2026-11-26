@@ -117,25 +117,34 @@ export function dtw(a, b, plafond = Infinity) {
   return prev[m] / (n + m);
 }
 
-// Voix apprise : des exemples { cls, f } (f = traits). classer() rend le nom le plus proche, sa distance, et celle du
-// plus proche exemple d'un autre nom. `sauf` écarte un exemple (vérification de chaque exemple contre tous les autres).
+// Voix apprise : des exemples { cls, f } (f = traits). Le score d'un nom est la moyenne de ses deux exemples les plus
+// proches (un seul exemple voisin par hasard ne suffit pas) ; classer() rend le meilleur nom, son score, et le score du
+// deuxième nom. `sauf` écarte un exemple (vérification de chaque exemple contre tous les autres).
 export class Voix {
   constructor(exemples) { this.ex = exemples; }
   classer(f, sauf = -1) {
-    let dist = Infinity, cls = -1, autre = Infinity;
-    const d = this.ex.map((e, i) => (i === sauf ? Infinity : dtw(f, e.f)));
-    d.forEach((v, i) => { if (v < dist) { dist = v; cls = this.ex[i].cls; } });
-    d.forEach((v, i) => { if (this.ex[i].cls !== cls && v < autre) autre = v; });
+    const par = new Map();
+    this.ex.forEach((e, i) => {
+      if (i === sauf) return;
+      const d = dtw(f, e.f), a = par.get(e.cls) || [Infinity, Infinity];
+      if (d < a[0]) { a[1] = a[0]; a[0] = d; } else if (d < a[1]) a[1] = d;
+      par.set(e.cls, a);
+    });
+    let cls = -1, dist = Infinity, autre = Infinity;
+    for (const [c, a] of par) {
+      const v = a[1] === Infinity ? a[0] : (a[0] + a[1]) / 2;
+      if (v < dist) { autre = dist; dist = v; cls = c; } else if (v < autre) autre = v;
+    }
     return { cls, dist, autre };
   }
-  // Chaque exemple contre tous les autres : combien retrouvent leur nom, et la plus grande distance à leur plus proche semblable.
-  verifier() {
+  // Les exemples à partir du rang `depuis`, chacun contre tous les autres : combien retrouvent leur nom, et le plus grand score d'un nom retrouvé.
+  verifier(depuis = 0) {
     let ok = 0, loin = 0;
-    this.ex.forEach((e, i) => {
-      const r = this.classer(e.f, i);
-      if (r.cls === e.cls) { ok += 1; if (r.dist > loin) loin = r.dist; }
-    });
-    return { ok, n: this.ex.length, loin };
+    for (let i = depuis; i < this.ex.length; i++) {
+      const r = this.classer(this.ex[i].f, i);
+      if (r.cls === this.ex[i].cls) { ok += 1; if (r.dist > loin) loin = r.dist; }
+    }
+    return { ok, n: this.ex.length - depuis, loin };
   }
 }
 

@@ -16,12 +16,13 @@ export const INTERVALLES = [null,
 export const sensDe = (st, sens) => (sens > 0 ? 'montant' : 'descendant') + (INTERVALLES[st].masc ? '' : 'e');
 
 // Accords : demi-tons au-dessus de la fondamentale, et suffixe du chiffrage dans l'écriture du jazz : – pour mineur,
-// ∆ pour la septième majeure. mineur = la fondamentale s'écrit comme dans une tonalité mineure.
+// ∆ pour la septième majeure. mineur = la fondamentale s'écrit comme dans une tonalité mineure. Une seule liste pour tous
+// les exercices. nom = ce qu'on lit sur un bouton de réponse quand le signe seul ne dit rien (sinon le signe).
 export const ACCORDS = [
-  { id: 'maj', tons: [0, 4, 7], signe: '' },
-  { id: 'min', tons: [0, 3, 7], signe: '–', mineur: true },
-  { id: 'aug', tons: [0, 4, 8], signe: '+' },
-  { id: 'dim', tons: [0, 3, 6], signe: '°', mineur: true },
+  { id: 'maj', tons: [0, 4, 7], signe: '', nom: 'majeur' },
+  { id: 'min', tons: [0, 3, 7], signe: '–', nom: 'mineur', mineur: true },
+  { id: 'aug', tons: [0, 4, 8], signe: '+', nom: 'augmenté' },
+  { id: 'dim', tons: [0, 3, 6], signe: '°', nom: 'diminué', mineur: true },
   { id: 'sus4', tons: [0, 5, 7], signe: 'sus4' },
   { id: 'm7', tons: [0, 3, 7, 10], signe: '–7', mineur: true },
   { id: 'maj7', tons: [0, 4, 7, 11], signe: '∆7' },
@@ -34,6 +35,23 @@ export function chiffrage(racine, id) {
   const a = ACCORDS.find((q) => q.id === id);
   return (a.mineur || id === '7' && racine === 6 ? RACINES_MIN : RACINES)[racine] + a.signe;
 }
+
+// Gammes et modes : demi-tons au-dessus de la tonique. Une seule liste pour tous les exercices : une gamme ajoutée ici
+// apparaît dans les réglages de chacun. Deux noms peuvent désigner les mêmes notes (majeure et ionien).
+export const GAMMES = [
+  { id: 'majeure', nom: 'majeure', tons: [0, 2, 4, 5, 7, 9, 11] },
+  { id: 'mineure', nom: 'mineure', tons: [0, 2, 3, 5, 7, 8, 10] },
+  { id: 'harmonique', nom: 'mineure harmonique', tons: [0, 2, 3, 5, 7, 8, 11] },
+  { id: 'pentaMaj', nom: 'pentatonique majeure', tons: [0, 2, 4, 7, 9] },
+  { id: 'pentaMin', nom: 'pentatonique mineure', tons: [0, 3, 5, 7, 10] },
+  { id: 'ionien', nom: 'ionien', tons: [0, 2, 4, 5, 7, 9, 11], mode: true },
+  { id: 'dorien', nom: 'dorien', tons: [0, 2, 3, 5, 7, 9, 10], mode: true },
+  { id: 'phrygien', nom: 'phrygien', tons: [0, 1, 3, 5, 7, 8, 10], mode: true },
+  { id: 'lydien', nom: 'lydien', tons: [0, 2, 4, 6, 7, 9, 11], mode: true },
+  { id: 'mixolydien', nom: 'mixolydien', tons: [0, 2, 4, 5, 7, 9, 10], mode: true },
+  { id: 'eolien', nom: 'éolien', tons: [0, 2, 3, 5, 7, 8, 10], mode: true },
+  { id: 'locrien', nom: 'locrien', tons: [0, 1, 3, 5, 6, 8, 10], mode: true }];
+export const memesNotes = (a, b) => { const g = (id) => (GAMMES.find((q) => q.id === id) || { tons: [id] }).tons.join(); return g(a) === g(b); };
 
 const pick = (a, rnd) => a[Math.floor(rnd() * a.length)];
 const ivOk = (iv) => { const a = (iv || []).filter((s) => INTERVALLES[s]); return a.length ? a : [4, 7]; };
@@ -71,6 +89,17 @@ export function tirerAccord(r, rnd = Math.random, prev = null) {
     if (essai <= 20 && prev && prev.id === id && prev.racine === racine) continue;
     const a = ACCORDS.find((q) => q.id === id);
     return { id, racine, ref: 48 + racine, tons: a.tons.map((t) => 48 + racine + t) };
+  }
+}
+
+// Une gamme : la tonique sonne (entre do2 et si2), les notes vont jusqu'à l'octave, en montant ou en descendant.
+export function tirerGamme(r, rnd = Math.random, prev = null) {
+  const types = (r.types || []).filter((id) => GAMMES.some((g) => g.id === id));
+  for (let essai = 0; ; essai++) {
+    const id = pick(types.length ? types : ['majeure'], rnd), racine = Math.floor(rnd() * 12), sens = pick(sensOk(r), rnd);
+    if (essai <= 20 && prev && prev.id === id && prev.racine === racine) continue;
+    const haut = [...GAMMES.find((g) => g.id === id).tons, 12].map((t) => 48 + racine + t);
+    return { id, racine, sens, ref: 48 + racine, notes: sens > 0 ? haut : haut.reverse() };
   }
 }
 

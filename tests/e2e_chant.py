@@ -131,7 +131,8 @@ async def main():
 
             # 5. Lecture d'intervalles : une série enregistrée (cadence accélérée pour le test).
             b, pg, errs = await page(p, base, w, '&periode=60')
-            await pg.click('#liste button[data-exo="noms"]'); await pg.wait_for_timeout(500); await shot(pg, 'noms_intro.png')
+            await pg.click('#liste button[data-exo="noms"]'); await pg.wait_for_timeout(700)
+            await pg.click('#regler'); await pg.click('#reglages button[data-a="serie"]'); await pg.wait_for_timeout(700); await shot(pg, 'noms_intro.png')
             print('5. bouton Réglages masqué sur l\'écran d\'enregistrement :', await pg.is_hidden('#regler'))
             await pg.click('#systems button[data-e="go"]'); await pg.wait_for_timeout(1500); await shot(pg, 'noms_dire.png')
             await pg.wait_for_timeout(2600)
@@ -144,4 +145,4 @@ async def main():
             meta = json.loads(blocs[b'sLFG'].decode('utf-8')); noms = [q[1] for q in meta['phrases']]
             print('5. Enregistrement :', repr(fin.replace('\n', ' / ')), '|', f['name'], len(raw), 'octets, son', round(len(blocs[b'data']) / 32000, 1), 's |', len(noms), 'noms,', len(set(noms)), 'différents, chacun', sorted({noms.count(q) for q in noms}), 'fois | instants croissants :', all(a[0] <= c[0] for a, c in zip(meta['phrases'], meta['phrases'][1:])), '| exemples', meta['phrases'][:2], '| erreurs :', errs)
             await b.close()
-asyncio.run(main())
+if __name__ == "__main__": asyncio.run(main())
