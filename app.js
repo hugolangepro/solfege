@@ -4,9 +4,9 @@ import { Pitch } from './pitch.js';
 import { INTERVALLES, ACCORDS, GAMMES, gammeCourt, memesNotes, sensDe, chiffrage, racineNom, tirerIntervalle, tirerPortee, tirerAccord, tirerGamme, midiOf, Hold } from './chant.js';
 import { chargerPiano, jouer, couper } from './piano.js';
 import { Ecoute, Voix, traits, apprendre, emballer, deballer } from './noms.js';
-import { PER, P_MIN, P_MAX, CLEFS, INK, DONE, RED, BLUE, SOFT, LINE, r2, noteInfo, metrics, systemSVG, miniPortee, porteeChant } from './portee.js';
+import { PER, P_MIN, P_MAX, CLEFS, INK, DONE, RED, GREEN, BLUE, SOFT, LINE, r2, noteInfo, metrics, systemSVG, miniPortee, porteeChant } from './portee.js';
 
-const VERSION = '2026-11-26.2';
+const VERSION = '2026-11-26.3';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
@@ -17,7 +17,9 @@ const RED_CONF = 0.9;                                  // une syllabe au moins a
 const COMMIT_MS = 2500;                                // silence après lequel une syllabe nette restée sans note compte comme réponse
 const TOURNE = 2;                                      // notes lues sur une portée avant que la portée précédente soit renouvelée
 // chant : durée de la note de référence, silence gardé après elle, pause avant l'exercice suivant, courbe affichée
-const REF_MS = 1200, REF_TAIL_MS = 200, NEXT_MS = 700, TRACE_S = 3;
+const REF_MS = 1200, REF_TAIL_MS = 200, TRACE_S = 3;
+// Réponse juste : elle passe au vert et la question suivante vient vite ; après une erreur, on laisse le temps de voir la correction.
+const ENCHAINE_MS = 280, APRES_ERREUR_MS = 900;
 const TOL = +params.get('tol') || 50;                  // bande en cents
 // pas à tâtons : après une note tenue, la suivante doit l'être dans la tenue + CHERCHE_MS, sinon on reprend à la première
 const CHERCHE_MS = 2000;
@@ -35,7 +37,7 @@ const prefs = {
   accords: { types: ACCORDS.map((a) => a.id) },
   noms: { clef: 'sol', iv: TOUS.slice(), reponse: 'voix', alterations: false },
   gammes: { types: ['majeure', 'mineure', 'harmonique', 'pentaMaj', 'pentaMin'], montant: true, descendant: false },
-  rIntervalles: { iv: TOUS.slice(), melodique: true, harmonique: false, montant: true, descendant: true },
+  rIntervalles: { iv: TOUS.slice(), melodique: true, harmonique: false, montant: true, descendant: true, ecart: 600 },
   rAccords: { types: ACCORDS.map((a) => a.id), plaque: true, arpege: false },
   rGammes: { types: ['majeure', 'mineure', 'harmonique', 'pentaMaj', 'pentaMin'], montant: true, descendant: false },
 };
@@ -658,7 +660,7 @@ function onPitch(sess, q) {
   S.results.push({ quoi: S.it.quoi, ms: Math.round(now - S.tVise), cents: S.cents, replays: S.replays, reprises: S.reprises, aides: S.aides });
   S.phase = 'tenu'; renderChant(); ligne();
   if (S.n % 8 === 0) sauver(S);
-  S.nextT = setTimeout(() => { if (S === sess && !S.over && !S.pause) suivant(); }, NEXT_MS);
+  S.nextT = setTimeout(() => { if (S === sess && !S.over && !S.pause) suivant(); }, S.reprises ? APRES_ERREUR_MS : ENCHAINE_MS);
 }
 
 // En haut : le nom de l'intervalle, le chiffrage de l'accord, ou la portée avec ses notes. Dessous, la courbe de la voix :
@@ -679,7 +681,7 @@ function renderChant() {
   let o = '', label;
   if (S.exo === 'portee') {
     // la première note est bleue pendant qu'elle sonne ; une note tenue s'efface en gris ; le repère montre la note à chanter
-    const etats = it.notes.map((q, i) => (S.phase === 'ecoute' && i === S.fauxJ ? RED : i < S.j ? DONE : S.phase === 'ecoute' && i === 0 ? BLUE : INK));
+    const etats = it.notes.map((q, i) => (S.phase === 'tenu' ? GREEN : S.phase === 'ecoute' && i === S.fauxJ ? RED : i < S.j ? DONE : S.phase === 'ecoute' && i === 0 ? BLUE : INK));
     o += porteeChant(it.notes, etats, vise ? S.j : -1, W, s, yb);
     label = `Deux notes à chanter : ${INTERVALLES[it.st].nom} ${sensDe(it.st, it.sens)}.`;
   } else {
@@ -688,7 +690,7 @@ function renderChant() {
     // une pastille par note à chanter : grise une fois tenue, bleue pour la note en cours, rouge là où l'on a buté
     for (let i = 0; i < n; i++) {
       const x = W / 2 + (i - (n - 1) / 2) * 1.7 * s, fait = i < S.j, cur = vise && i === S.j, bute = S.phase === 'ecoute' && i === S.fauxJ;
-      o += `<circle data-c="${i}" cx="${r2(x)}" cy="${r2(9.7 * s)}" r="${r2(0.3 * s)}" fill="${bute ? RED : fait ? DONE : cur ? BLUE : 'none'}" stroke="${bute || fait ? 'none' : cur ? BLUE : LINE}" stroke-width="1.2"/>`;
+      o += `<circle data-c="${i}" cx="${r2(x)}" cy="${r2(9.7 * s)}" r="${r2(0.3 * s)}" fill="${bute ? RED : S.phase === 'tenu' ? GREEN : fait ? DONE : cur ? BLUE : 'none'}" stroke="${bute || fait || S.phase === 'tenu' ? 'none' : cur ? BLUE : LINE}" stroke-width="1.2"/>`;
     }
     label = accord ? `Accord ${it.titre} : ${n} notes à chanter de bas en haut.` : `${it.dit}${S.exo === 'gammes' ? ` : ${n} notes à chanter` : ''}.`;
   }
@@ -816,11 +818,11 @@ function onNom(sess, u) {
   S.etat = 'ok'; S.n += 1;
   renderNoms(); ligne();
   if (S.v.length % 16 === 0) sauver(S);
-  S.nextT = setTimeout(() => { if (S === sess && !S.over) suivantNom(); }, 350);
+  S.nextT = setTimeout(() => { if (S === sess && !S.over) suivantNom(); }, S.premier ? ENCHAINE_MS : APRES_ERREUR_MS);
 }
 function renderNoms() {
   if (!S || S.kind !== 'noms' || !S.it) return;
-  const { W, s, yb } = chantLayout(), H = Math.round(11.8 * s), col = S.etat === 'ok' ? DONE : S.etat === 'faux' ? RED : INK;
+  const { W, s, yb } = chantLayout(), H = Math.round(11.8 * s), col = S.etat === 'ok' ? GREEN : S.etat === 'faux' ? RED : INK;
   $('systems').style.gap = '0px';
   $('systems').innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Deux notes en ${CLEFS[S.it.clef].nom} : ${S.input === 'toucher' ? 'toucher' : 'dire'} le nom de l'intervalle.">${porteeChant(S.it.notes, [col, col], -1, W, s, yb, S.it.clef)}</svg>`
     + (S.input === 'toucher' ? choixHTML(S.r.iv.map((st) => [st, INTERVALLES[st].court])) : '');
@@ -851,7 +853,7 @@ function repondre(val) {
   render(); ligne();
   if (s.v.length % 16 === 0) sauver(s);
   if (s.attend) return;
-  s.nextT = setTimeout(() => { if (S === s && !s.over) (s.kind === 'noms' ? suivantNom : suivantReco)(); }, s.kind === 'noms' ? 350 : 800);
+  s.nextT = setTimeout(() => { if (S === s && !s.over) (s.kind === 'noms' ? suivantNom : suivantReco)(); }, s.premier ? ENCHAINE_MS : APRES_ERREUR_MS);
 }
 
 // ---------- reconnaissance à l'oreille : intervalles, accords, gammes ----------
@@ -890,8 +892,10 @@ async function sonPret() {
 async function jouerNotes(notes, jeu) {
   if (!(await sonPret())) return;
   const n = notes.length, mel = jeu === 'mel', gamme = S.exo === 'rGammes';
+  // écart entre deux départs de notes : réglable pour les intervalles ; chaque note sonne jusqu'à la suivante au moins
+  const pas = gamme ? 0.38 : S.exo === 'rIntervalles' ? (S.r.ecart || 600) / 1000 : 0.6, dur = gamme ? 0.7 : Math.min(2.5, Math.max(1.1, pas + 0.5));
   couper(AU.ctx);
-  notes.forEach((m, i) => jouer(AU.ctx, S.banc, m, mel ? (gamme ? 0.7 : 1.1) : 1.8, mel ? 0.9 : 0.9 / Math.sqrt(n), mel ? i * (gamme ? 0.38 : 0.6) : 0));
+  notes.forEach((m, i) => jouer(AU.ctx, S.banc, m, mel ? dur : 1.8, mel ? 0.9 : 0.9 / Math.sqrt(n), mel ? i * pas : 0));
 }
 const jouerReco = (jeu) => jouerNotes(S.it.notes, jeu || S.it.jeu);
 // Une réponse barrée, jouée sur la même fondamentale, dans le même sens et de la même façon que la question.
@@ -1010,6 +1014,9 @@ function reglagesHTML() {
     if (e === 'rIntervalles') {
       h += rang('Intervalles', coches(`${e}.iv`, TOUS.map((st) => [st, INTERVALLES[st].court, INTERVALLES[st].nom]), (v) => r.iv.includes(v)));
       h += rang('Notes jouées', coches(e, [['melodique', 'L\'une après l\'autre'], ['harmonique', 'Ensemble']], (v) => !!r[v]));
+      const ec = r.ecart || 600;
+      h += rang('Temps entre les deux notes', `<div class="pas"><button type="button" data-a="pas" data-k="rIntervalles.ecart" data-v="-1" aria-label="Plus court"${ec > 200 ? '' : ' disabled'}>−</button><output>${(ec / 1000).toFixed(1).replace('.', ',')} s</output>`
+        + `<button type="button" data-a="pas" data-k="rIntervalles.ecart" data-v="1" aria-label="Plus long"${ec < 2000 ? '' : ' disabled'}>+</button></div>`);
       h += rang('Sens', coches(e, [['montant', 'Montant'], ['descendant', 'Descendant']], (v) => !!r[v]));
     } else if (e === 'rAccords') {
       h += rang('Accords', coches(`${e}.types`, ACCORDS.map((a) => [a.id, chiffrage(0, a.id)]), (v) => r.types.includes(v)));
@@ -1078,6 +1085,7 @@ function reglage(b) {
     }
   } else if (a === 'pas') {
     if (k === 'tenue') prefs.tenue = Math.max(300, Math.min(2000, prefs.tenue + 100 * +v));
+    else if (k === 'rIntervalles.ecart') prefs.rIntervalles.ecart = Math.max(200, Math.min(2000, (prefs.rIntervalles.ecart || 600) + 100 * +v));
     else {
       const [clef, i] = k.split('.'), e = prefs.notes[clef];
       e[+i] += +v;

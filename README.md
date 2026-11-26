@@ -20,6 +20,8 @@ Adresse : https://hugolangepro.github.io/solfege/
   qui affiche le mot à prononcer. Gammes : maj, min, min harm, penta maj, penta min ; modes par leur nom.
 - Pas de texte quand une icône suffit (réglages, micro, écoute, notes ensemble, notes l'une après l'autre, suite).
 - Le moins d'éléments possible à l'écran ; une note fausse est rouge, sans autre marque.
+- Réponse juste (exercices à questions) : elle passe au vert et la question suivante vient en 0,28 s ; après une erreur, 0,9 s
+  (en reconnaissance, on reste sur la question). En lecture de notes, une note lue s'efface en gris.
 
 ## Lecture sans fin
 
@@ -140,7 +142,7 @@ jouée). Sans micro. Le haut-parleur rejoue. Une mauvaise réponse est barrée ;
 pour comparer. Seule la première réponse compte. Trouvée du premier coup, la question suivante vient seule ; trouvée après une
 erreur, on reste sur la question (écoute note après note si c'était joué ensemble, flèche pour passer à la suite).
 
-- Intervalles : les deux notes l'une après l'autre ou ensemble, en montant ou en descendant.
+- Intervalles : les deux notes l'une après l'autre ou ensemble, en montant ou en descendant ; temps entre les deux notes réglable (0,2 à 2 s, 0,6 s au départ).
 - Accords : les notes ensemble ou l'une après l'autre.
 - Gammes : de la tonique à l'octave, en montant ou en descendant.
 

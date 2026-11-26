@@ -3,7 +3,7 @@ import { GLYPHS } from './glyphs.js';
 
 export const PER = 8, SS = 191;                          // notes par système ; un interligne dans les unités des contours
 export const P_MIN = -6, P_MAX = 14;                     // positions extrêmes : trois lignes supplémentaires de chaque côté
-export const INK = '#1C1A17', DONE = 'rgba(28,26,23,0.36)', RED = '#B3261E', BLUE = '#1F4E8C', SOFT = '#6B6457', LINE = 'rgba(28,26,23,0.72)';
+export const INK = '#1C1A17', DONE = 'rgba(28,26,23,0.36)', RED = '#B3261E', GREEN = '#2E7A3C', BLUE = '#1F4E8C', SOFT = '#6B6457', LINE = 'rgba(28,26,23,0.72)';
 export const CLEFS = { sol: { glyph: 'gclef', off: 2, base: 4, nom: 'clé de sol' }, fa: { glyph: 'fclef', off: 4, base: 2, nom: 'clé de fa' } };
 const SEMIS = [0, 2, 4, 5, 7, 9, 11];
 export const r2 = (v) => Math.round(v * 100) / 100;
