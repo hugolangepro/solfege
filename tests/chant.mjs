@@ -27,6 +27,9 @@ let s = 7; const rnd = () => { s = (s * 16807) % 2147483647; return s / 21474836
   { let bon = true; for (let i = 0; i < 2000; i++) { const g = tirerGamme({ types: GAMMES.map((q) => q.id), montant: true, descendant: true }, rnd), n = GAMMES.find((q) => q.id === g.id).tons.length + 1;
       bon = bon && g.notes.length === n && g.notes[g.sens > 0 ? 0 : n - 1] === g.ref && Math.abs(g.notes[n - 1] - g.notes[0]) === 12 && g.ref >= 48 && g.ref < 60; }
     check('2000 gammes tirées : de la tonique à l\'octave, dans les deux sens', bon, true); }
+  { const vus = new Set(); let nat = true;
+    for (let i = 0; i < 3000; i++) { const p = tirerPortee({ iv: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], montant: true, descendant: true, alterations: false }, rnd); nat = nat && p.notes.every((n) => n.alt === 0); vus.add(p.st); }
+    check('sans dièse ni bémol : 3000 tirages en notes naturelles, les 11 intervalles présents', `${nat} ${vus.size}`, 'true 11'); }
   check('mêmes notes sous deux noms', [memesNotes('majeure', 'ionien'), memesNotes('mineure', 'eolien'), memesNotes('majeure', 'lydien')].join(), 'true,true,false');
   check('noms', [5, 6, 7, 10].map((st) => `${INTERVALLES[st].nom} ${sensDe(st, 1)}`).join(', '), 'quarte montante, triton montant, quinte montante, septième mineure montante');
 }

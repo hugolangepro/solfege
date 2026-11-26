@@ -117,16 +117,20 @@ async def main():
             print('   Lecture · Notes : rangs', rangs, '|', e4, '| erreurs :', errs)
             await b.close()
 
-            # 6. Micro coupé : une fausse note tenue pendant ce temps ne compte pas ; micro rétabli, l'accord se chante normalement.
-            w = wav('chant_muet.wav', [(2.0, 1.4, 50), (4.6, 1.4, 48), (6.1, 1.4, 52), (7.6, 1.4, 55)], 11)
+            # 6. Micro coupé : le micro est rendu (le faux micro de Chrome repart alors du début de son fichier quand on le reprend).
+            w = wav('chant_muet.wav', [(2.0, 1.4, 48), (3.5, 1.4, 52), (5.0, 1.4, 55)], 9)
             b, pg, errs = await page(p, base, w, '&ac=maj@0')
             await pg.click('#liste button[data-exo="accords"]'); await pg.wait_for_timeout(900)
-            await pg.click('#mic'); await pg.wait_for_timeout(2800)
-            m1 = await pg.evaluate("() => { const s = window.__solfege.session; return [s.muet, s.phase, s.reprises, s.track.length, document.getElementById('mic').getAttribute('aria-pressed')]; }")
+            await pg.click('#mic'); await pg.wait_for_timeout(1500)
+            m1 = await pg.evaluate("() => { const s = window.__solfege.session; return [s.muet, s.phase, s.reprises, s.track.length, document.getElementById('mic').getAttribute('aria-pressed'), window.__solfege.son.mic.ouvert]; }")
             await shot(pg, 'micro_coupe.png')
-            await pg.click('#mic'); await pg.wait_for_timeout(5600)
-            m2 = await pg.evaluate(ETAT)
-            print('6. Micro coupé pendant une fausse note tenue 1,4 s : [coupé, phase, reprises, points de courbe, bouton] =', m1, '| micro rétabli puis accord chanté : trouvés', m2['n'], 'reprises', [r['reprises'] for r in m2['res']], '| erreurs :', errs)
+            await pg.click('#aides button[data-h="plaque"]'); await pg.wait_for_timeout(300)
+            m2 = await pg.evaluate("() => [window.__solfege.son.ctx.state, window.__solfege.session.aides]")
+            await pg.click('#mic'); await pg.wait_for_timeout(300)
+            m3 = await pg.evaluate("() => window.__solfege.son.mic.ouvert")
+            await pg.wait_for_timeout(7000)
+            m4 = await pg.evaluate(ETAT)
+            print('6. Micro coupé : [coupé, phase, reprises, points de courbe, bouton, micro ouvert] =', m1, '| piano pendant la coupure (contexte, aides) :', m2, '| micro repris :', m3, '| accord chanté ensuite : trouvés', m4['n'], 'reprises', [r['reprises'] for r in m4['res']], '| erreurs :', errs)
             await b.close()
 
             # 5. Lecture d'intervalles : une série enregistrée (cadence accélérée pour le test).

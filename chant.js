@@ -6,11 +6,12 @@ import { centsToClass } from './pitch.js';
 const SEMIS = [0, 2, 4, 5, 7, 9, 11];
 export const midiOf = (p) => { const d = p + 2; return 60 + 12 * Math.floor(d / 7) + SEMIS[((d % 7) + 7) % 7]; };
 
-// Les onze intervalles, par nombre de demi-tons. deg = nombre de degrés franchis sur la portée (le triton s'écrit des deux façons).
+// Les onze intervalles, par nombre de demi-tons. À l'écran, toujours `court` (notation standard) ; `nom` sert aux lecteurs d'écran
+// et à l'écran d'enregistrement, où l'on lit le mot à prononcer. deg = nombre de degrés franchis sur la portée (le triton s'écrit des deux façons).
 export const INTERVALLES = [null,
   { nom: 'seconde mineure', court: '2m', deg: [1] }, { nom: 'seconde majeure', court: '2M', deg: [1] },
   { nom: 'tierce mineure', court: '3m', deg: [2] }, { nom: 'tierce majeure', court: '3M', deg: [2] },
-  { nom: 'quarte', court: '4', deg: [3] }, { nom: 'triton', court: 'triton', deg: [3, 4], masc: true },
+  { nom: 'quarte', court: '4', deg: [3] }, { nom: 'triton', court: 'TT', deg: [3, 4], masc: true },
   { nom: 'quinte', court: '5', deg: [4] }, { nom: 'sixte mineure', court: '6m', deg: [5] }, { nom: 'sixte majeure', court: '6M', deg: [5] },
   { nom: 'septième mineure', court: '7m', deg: [6] }, { nom: 'septième majeure', court: '7M', deg: [6] }];
 export const sensDe = (st, sens) => (sens > 0 ? 'montant' : 'descendant') + (INTERVALLES[st].masc ? '' : 'e');
@@ -31,19 +32,21 @@ export const ACCORDS = [
   { id: '6', tons: [0, 4, 7, 9], signe: '6' }];
 const RACINES = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'G♭', 'G', 'A♭', 'A', 'B♭', 'B'];
 const RACINES_MIN = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
-export function chiffrage(racine, id) {
-  const a = ACCORDS.find((q) => q.id === id);
-  return (a.mineur || id === '7' && racine === 6 ? RACINES_MIN : RACINES)[racine] + a.signe;
+export const racineNom = (racine, id) => (ACCORDS.find((q) => q.id === id).mineur || id === '7' && racine === 6 ? RACINES_MIN : RACINES)[racine];
+export function chiffrage(racine, id, nom = racineNom(racine, id)) {
+  return nom + ACCORDS.find((q) => q.id === id).signe;
 }
 
 // Gammes et modes : demi-tons au-dessus de la tonique. Une seule liste pour tous les exercices : une gamme ajoutée ici
-// apparaît dans les réglages de chacun. Deux noms peuvent désigner les mêmes notes (majeure et ionien).
+// apparaît dans les réglages de chacun. Deux noms peuvent désigner les mêmes notes (majeure et ionien). À l'écran : `court`,
+// ou le nom du mode, déjà court.
+export const gammeCourt = (id) => { const g = GAMMES.find((q) => q.id === id); return g.court || g.nom; };
 export const GAMMES = [
-  { id: 'majeure', nom: 'majeure', tons: [0, 2, 4, 5, 7, 9, 11] },
-  { id: 'mineure', nom: 'mineure', tons: [0, 2, 3, 5, 7, 8, 10] },
-  { id: 'harmonique', nom: 'mineure harmonique', tons: [0, 2, 3, 5, 7, 8, 11] },
-  { id: 'pentaMaj', nom: 'pentatonique majeure', tons: [0, 2, 4, 7, 9] },
-  { id: 'pentaMin', nom: 'pentatonique mineure', tons: [0, 3, 5, 7, 10] },
+  { id: 'majeure', nom: 'majeure', court: 'maj', tons: [0, 2, 4, 5, 7, 9, 11] },
+  { id: 'mineure', nom: 'mineure', court: 'min', tons: [0, 2, 3, 5, 7, 8, 10] },
+  { id: 'harmonique', nom: 'mineure harmonique', court: 'min harm', tons: [0, 2, 3, 5, 7, 8, 11] },
+  { id: 'pentaMaj', nom: 'pentatonique majeure', court: 'penta maj', tons: [0, 2, 4, 7, 9] },
+  { id: 'pentaMin', nom: 'pentatonique mineure', court: 'penta min', tons: [0, 3, 5, 7, 10] },
   { id: 'ionien', nom: 'ionien', tons: [0, 2, 4, 5, 7, 9, 11], mode: true },
   { id: 'dorien', nom: 'dorien', tons: [0, 2, 3, 5, 7, 9, 10], mode: true },
   { id: 'phrygien', nom: 'phrygien', tons: [0, 1, 3, 5, 7, 8, 10], mode: true },
@@ -75,6 +78,7 @@ export function tirerPortee(r, rnd = Math.random, prev = null, clef = 'sol') {
     const p1 = -2 + Math.floor(rnd() * 10), p2 = p1 + sens * deg;
     if (p2 < -4 || p2 > 12) continue;
     const m1 = haut(p1), m2 = m1 + sens * st, alt = m2 - haut(p2);
+    if (r.alterations === false && alt !== 0 && essai < 400) continue;      // sans dièse ni bémol : deux notes naturelles
     if (Math.abs(alt) > 1) continue;
     const it = { st, sens, notes: [{ p: p1, alt: 0, midi: m1 }, { p: p2, alt, midi: m2 }] };
     if (essai > 40 || !prev || prev.st !== st || prev.notes[0].p !== p1 || prev.sens !== sens) return it;

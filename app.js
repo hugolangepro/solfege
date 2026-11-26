@@ -1,12 +1,12 @@
 // Solfège : lecture de notes et chant, sans fin. Interface minimale.
 import { loadModel, Recognizer, Resampler, Suivi, SYLLABES } from './engine.js';
 import { Pitch } from './pitch.js';
-import { INTERVALLES, ACCORDS, GAMMES, memesNotes, sensDe, chiffrage, tirerIntervalle, tirerPortee, tirerAccord, tirerGamme, midiOf, Hold } from './chant.js';
+import { INTERVALLES, ACCORDS, GAMMES, gammeCourt, memesNotes, sensDe, chiffrage, racineNom, tirerIntervalle, tirerPortee, tirerAccord, tirerGamme, midiOf, Hold } from './chant.js';
 import { chargerPiano, jouer, couper } from './piano.js';
 import { Ecoute, Voix, traits, apprendre, emballer, deballer } from './noms.js';
 import { PER, P_MIN, P_MAX, CLEFS, INK, DONE, RED, BLUE, SOFT, LINE, r2, noteInfo, metrics, systemSVG, miniPortee, porteeChant } from './portee.js';
 
-const VERSION = '2026-11-26.1';
+const VERSION = '2026-11-26.2';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
@@ -33,7 +33,7 @@ const prefs = {
   intervalles: { iv: TOUS.slice(), montant: true, descendant: true, depart: true },
   portee: { iv: TOUS.slice(), montant: true, descendant: true },
   accords: { types: ACCORDS.map((a) => a.id) },
-  noms: { clef: 'sol', iv: TOUS.slice(), reponse: 'voix' },
+  noms: { clef: 'sol', iv: TOUS.slice(), reponse: 'voix', alterations: false },
   gammes: { types: ['majeure', 'mineure', 'harmonique', 'pentaMaj', 'pentaMin'], montant: true, descendant: false },
   rIntervalles: { iv: TOUS.slice(), melodique: true, harmonique: false, montant: true, descendant: true },
   rAccords: { types: ACCORDS.map((a) => a.id), plaque: true, arpege: false },
@@ -50,6 +50,17 @@ try {
 } catch (e) { /* préférences absentes */ }
 const savePrefs = () => { try { localStorage.setItem('solfege.prefs', JSON.stringify(prefs)); } catch (e) { /* stockage indisponible */ } };
 const tenue = () => +params.get('tenue') || prefs.tenue;
+
+// ---------- icônes ----------
+// Trait de 1,5 dans un carré de 24, couleur du texte : même dessin que le micro et la roue des réglages.
+const svg = (corps, t = 24) => `<svg width="${t}" height="${t}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${corps}</svg>`;
+const tete = (x, y) => `<ellipse cx="${x}" cy="${y}" rx="2.6" ry="1.9" transform="rotate(-20 ${x} ${y})" fill="currentColor" stroke="none"/>`;
+const ICONE = {
+  ecouter: (t) => svg('<path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z"/><path d="M15.5 9.2a4 4 0 0 1 0 5.6M18.2 6.6a7.6 7.6 0 0 1 0 10.8"/>', t),
+  ensemble: (t) => svg(tete(10.5, 18) + tete(10.5, 13.5) + tete(10.5, 9) + '<path d="M13 18V3.5"/>', t),
+  suite: (t) => svg(tete(5, 18) + tete(12, 13) + tete(19, 8), t),
+  suivant: (t) => svg('<path d="M5 12h14M13.5 6.5 19 12l-5.5 5.5"/>', t),
+};
 
 // ---------- état ----------
 let S = null;                       // séance en cours
@@ -72,15 +83,17 @@ function show(view) {
 }
 
 // ---------- son ----------
+// Le micro peut être rendu (coupe) puis repris (rouvre) sans fermer le son : l'iPhone éteint son témoin orange dès que le micro
+// est rendu, et le piano continue de jouer.
 async function openMic(ctx, onSamples) {
-  const stream = await navigator.mediaDevices.getUserMedia({
+  const demander = () => navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
   });
-  const release = () => { try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* déjà arrêté */ } };
+  const rendre = (st) => { try { st.getTracks().forEach((t) => t.stop()); } catch (e) { /* déjà arrêté */ } };
+  let stream = await demander(), src = null;
   try {
     // la reprise peut rester en attente d'un geste : on ne l'attend pas plus d'une seconde
     if (ctx.state !== 'running') await Promise.race([ctx.resume().catch(() => {}), new Promise((r) => setTimeout(r, 1000))]);
-    const src = ctx.createMediaStreamSource(stream);
     const mute = ctx.createGain();
     mute.gain.value = 0; mute.connect(ctx.destination);
     let node;
@@ -92,13 +105,21 @@ async function openMic(ctx, onSamples) {
       node = ctx.createScriptProcessor(1024, 1, 1);
       node.onaudioprocess = (e) => onSamples(new Float32Array(e.inputBuffer.getChannelData(0)));
     }
-    src.connect(node); node.connect(mute);
+    node.connect(mute);
+    const brancher = () => { src = ctx.createMediaStreamSource(stream); src.connect(node); };
+    brancher();
     const track = stream.getAudioTracks()[0];
     const st = track && track.getSettings ? track.getSettings() : {};
     const info = { nom: track ? track.label : '' };
     for (const k of ['sampleRate', 'channelCount', 'echoCancellation', 'noiseSuppression', 'autoGainControl']) info[k] = st[k] ?? null;
-    return { info, stop() { release(); try { ctx.close(); } catch (e) { /* déjà fermé */ } } };
-  } catch (e) { release(); throw e; }
+    return {
+      info,
+      get ouvert() { return !!stream; },
+      coupe() { if (!stream) return; try { src.disconnect(); } catch (e) { /* déjà débranché */ } rendre(stream); stream = null; },
+      async rouvre() { if (stream) return; stream = await demander(); brancher(); },
+      stop() { if (stream) rendre(stream); stream = null; try { ctx.close(); } catch (e) { /* déjà fermé */ } },
+    };
+  } catch (e) { rendre(stream); throw e; }
 }
 
 // Le micro reste ouvert d'un exercice à l'autre : changer d'exercice ne redemande rien. `sink` reçoit le son à 16 kHz.
@@ -106,14 +127,17 @@ async function ouvrirSon(micro = true) {
   if (AU && AU.micro !== micro) fermerSon();              // un exercice au toucher n'ouvre pas le micro
   if (AU && AU.ctx.state !== 'closed') {
     if (AU.ctx.state !== 'running') AU.ctx.resume().catch(() => {});
+    if (micro && !AU.mic.ouvert) await AU.mic.rouvre();     // rendu pendant une coupure ou les réglages
     return AU;
   }
+  if (AU) AU = null;
   const AC = window.AudioContext || window.webkitAudioContext;
   const ctx = new AC({ latencyHint: 'interactive' });
   ctx.resume().catch(() => {});                           // dans le geste de l'utilisateur
   // iPhone : micro et haut-parleur ensemble, sans traitement de la voix ; sans micro, le son seul (il passe même en mode silencieux)
   try { if (navigator.audioSession) navigator.audioSession.type = micro ? 'play-and-record' : 'playback'; } catch (e) { /* réglage absent */ }
-  if (!micro) { AU = { ctx, micro, got: true, sink: null, lag: null, mic: { info: null, stop() { try { ctx.close(); } catch (e) { /* déjà fermé */ } } } }; return AU; }
+  nommer();
+  if (!micro) { AU = { ctx, micro, got: true, sink: null, lag: null, mic: { info: null, ouvert: true, coupe() {}, async rouvre() {}, stop() { try { ctx.close(); } catch (e) { /* déjà fermé */ } } } }; return AU; }
   const au = { ctx, micro, rs: new Resampler(ctx.sampleRate), sink: null, got: false, lag: null };
   try {
     au.mic = await openMic(ctx, (x, t) => {
@@ -126,6 +150,13 @@ async function ouvrirSon(micro = true) {
   } catch (e) { try { ctx.close(); } catch (err) { /* déjà fermé */ } throw e; }
   AU = au;
   return au;
+}
+// Quand le son de l'app paraît dans le lecteur de l'écran verrouillé et du centre de contrôle, il y porte le nom et l'icône de l'app.
+function nommer() {
+  try {
+    if (!('mediaSession' in navigator) || !window.MediaMetadata) return;
+    navigator.mediaSession.metadata = new MediaMetadata({ title: 'Solfège', artwork: [192, 512].map((t) => ({ src: `icons/icon-${t}.png`, sizes: `${t}x${t}`, type: 'image/png' })) });
+  } catch (e) { /* lecteur absent */ }
 }
 function fermerSon() {
   if (!AU) return;
@@ -154,7 +185,9 @@ async function lancer(exo) {
     $('result').textContent = ''; delete $('result').dataset.alerte;
     $('debug').hidden = !DEBUG; $('debug').textContent = '';
     $('regler').hidden = S.kind === 'enreg'; $('aides').hidden = S.kind !== 'chant';
-    $('aides').querySelector('[data-h="plaque"]').hidden = S.exo === 'gammes'; $('aides').querySelector('[data-h="arpege"]').textContent = S.exo === 'gammes' ? 'Écouter' : 'Arpégé';
+    const pl = $('aides').querySelector('[data-h="plaque"]'), ar = $('aides').querySelector('[data-h="arpege"]');
+    pl.hidden = S.exo === 'gammes'; pl.innerHTML = ICONE.ensemble();
+    ar.innerHTML = S.exo === 'gammes' ? ICONE.ecouter() : ICONE.suite(); ar.setAttribute('aria-label', S.exo === 'gammes' ? 'Écouter la gamme' : 'Les notes l\'une après l\'autre');
     $('mic').hidden = S.input === 'midi' || S.input === 'toucher'; $('mic').disabled = S.kind === 'enreg'; $('mic').setAttribute('aria-pressed', 'false'); $('mic').setAttribute('aria-label', 'Couper le micro');
     show('page'); render(); ligne(); levelLoop();
     if (navigator.wakeLock && !verrou) navigator.wakeLock.request('screen').then((l) => { verrou = l; }).catch(() => {});
@@ -378,11 +411,20 @@ function levelLoop() {
   };
   if (mine && mine.input !== 'midi') tick();
 }
-function micro() {
+async function micro() {
   if (!S || S.over || S.pause || S.input === 'midi' || S.kind === 'enreg') return;
   S.muet = !S.muet;
-  $('mic').setAttribute('aria-pressed', String(S.muet));
-  $('mic').setAttribute('aria-label', S.muet ? 'Rétablir le micro' : 'Couper le micro');
+  const marque = () => { $('mic').setAttribute('aria-pressed', String(S.muet)); $('mic').setAttribute('aria-label', S.muet ? 'Rétablir le micro' : 'Couper le micro'); };
+  marque();
+  // le micro est vraiment rendu : le témoin de l'iPhone s'éteint
+  if (AU && AU.mic) {
+    if (S.muet) AU.mic.coupe();
+    else {
+      const mine = S;
+      try { await AU.mic.rouvre(); } catch (e) { if (S === mine) { S.muet = true; marque(); } return; }
+      if (S !== mine) return;
+    }
+  }
   if (S.kind !== 'chant') { if (S.kind === 'notes' && !S.muet && S.rec) S.tStart = S.rec.time; return; }   // ce qui a été dit micro coupé ne compte pas
   if (S.phase === 'vise') { S.j = 0; S.cents = []; S.fauxJ = -1; S.tNote = performance.now(); }
   S.hold.reset(); S.track = []; S.part = 0;
@@ -535,7 +577,7 @@ function suivant() {
   if (s.exo === 'intervalles') {
     let q = tirerIntervalle(s.r, Math.random, s.it);
     if (f) { const [a, b] = f.split(':').map(Number); q = { st: Math.abs(b - a), sens: Math.sign(b - a), ref: a, cible: b }; }
-    it = { ...q, cibles: s.r.depart ? [q.ref, q.cible] : [q.cible], titre: maj(INTERVALLES[q.st].nom), sous: sensDe(q.st, q.sens), quoi: [q.ref, q.cible] };
+    it = { ...q, cibles: s.r.depart ? [q.ref, q.cible] : [q.cible], titre: `${INTERVALLES[q.st].court} ${q.sens > 0 ? '↑' : '↓'}`, dit: `${INTERVALLES[q.st].nom} ${sensDe(q.st, q.sens)}`, quoi: [q.ref, q.cible] };
   } else if (s.exo === 'portee') {
     let q = tirerPortee(s.r, Math.random, s.it);
     if (f) { const [a, b, alt] = f.split(':').map(Number), m1 = midiOf(a), m2 = midiOf(b) + (alt || 0); q = { st: Math.abs(m2 - m1), sens: Math.sign(m2 - m1), notes: [{ p: a, alt: 0, midi: m1 }, { p: b, alt: alt || 0, midi: m2 }] }; }
@@ -543,7 +585,7 @@ function suivant() {
   } else if (s.exo === 'gammes') {
     let q = tirerGamme(s.r, Math.random, s.it);
     if (f) { const [id, rac] = f.split('@'); q = { id, racine: +rac, sens: 1, ref: 48 + +rac, notes: [...GAMMES.find((x) => x.id === id).tons, 12].map((t) => 48 + +rac + t) }; }
-    it = { ...q, cibles: q.notes, titre: maj(GAMMES.find((x) => x.id === q.id).nom), sous: q.sens > 0 ? 'en montant' : 'en descendant', quoi: [q.id, q.racine, q.sens] };
+    it = { ...q, cibles: q.notes, titre: `${gammeCourt(q.id)} ${q.sens > 0 ? '↑' : '↓'}`, dit: `Gamme ${GAMMES.find((x) => x.id === q.id).nom} ${q.sens > 0 ? 'en montant' : 'en descendant'}`, quoi: [q.id, q.racine, q.sens] };
   } else {
     let q = tirerAccord(s.r, Math.random, s.it);
     if (f) { const [id, rac] = f.split('@'), a = ACCORDS.find((x) => x.id === id); q = { id, racine: +rac, ref: 48 + +rac, tons: a.tons.map((t) => 48 + +rac + t) }; }
@@ -642,14 +684,13 @@ function renderChant() {
     label = `Deux notes à chanter : ${INTERVALLES[it.st].nom} ${sensDe(it.st, it.sens)}.`;
   } else {
     const accord = S.exo === 'accords';
-    o += `<text id="titre" x="${r2(W / 2)}" y="${r2((accord ? 6.6 : 5.4) * s)}" text-anchor="middle" font-family="${serif}" font-size="${r2((accord ? 4.2 : Math.min(2.4, W / s / (0.5 * it.titre.length + 1.5))) * s)}" ${accord ? '' : 'font-style="italic"'} fill="${INK}">${it.titre}</text>`;
-    if (it.sous) o += `<text id="sous" x="${r2(W / 2)}" y="${r2(7.5 * s)}" text-anchor="middle" font-family="${serif}" font-size="${r2(1.2 * s)}" font-style="italic" fill="${SOFT}">${it.sous}</text>`;
+    o += `<text id="titre" x="${r2(W / 2)}" y="${r2(6.6 * s)}" text-anchor="middle" font-family="${serif}" font-size="${r2(Math.min(4.2, W / s / (0.62 * it.titre.length + 1)) * s)}" fill="${INK}">${it.titre}</text>`;
     // une pastille par note à chanter : grise une fois tenue, bleue pour la note en cours, rouge là où l'on a buté
     for (let i = 0; i < n; i++) {
       const x = W / 2 + (i - (n - 1) / 2) * 1.7 * s, fait = i < S.j, cur = vise && i === S.j, bute = S.phase === 'ecoute' && i === S.fauxJ;
       o += `<circle data-c="${i}" cx="${r2(x)}" cy="${r2(9.7 * s)}" r="${r2(0.3 * s)}" fill="${bute ? RED : fait ? DONE : cur ? BLUE : 'none'}" stroke="${bute || fait ? 'none' : cur ? BLUE : LINE}" stroke-width="1.2"/>`;
     }
-    label = accord ? `Accord ${it.titre} : ${n} notes à chanter de bas en haut.` : `${it.titre} ${it.sous}${S.exo === 'gammes' ? ` : ${n} notes à chanter` : ''}.`;
+    label = accord ? `Accord ${it.titre} : ${n} notes à chanter de bas en haut.` : `${it.dit}${S.exo === 'gammes' ? ` : ${n} notes à chanter` : ''}.`;
   }
   if (S.courbe) {
     o += `<rect id="bande" x="${r2(xa)}" y="${r2(yc(TOL))}" width="${r2(xb - xa)}" height="${r2(yc(-TOL) - yc(TOL))}" fill="${BLUE}" opacity="0.16"/>`;
@@ -757,7 +798,7 @@ async function startNoms() {
 function suivantNom() {
   const s = S, f = s.forced && s.forced.length ? s.forced.shift() : null;
   const clef = s.r.clef === 'deux' ? (Math.random() < 0.5 ? 'sol' : 'fa') : s.r.clef === 'fa' ? 'fa' : 'sol';
-  const q = tirerPortee(f ? { iv: [f], montant: true, descendant: true } : { iv: s.r.iv, montant: true, descendant: true }, Math.random, s.it, clef);
+  const q = tirerPortee(f ? { iv: [f], montant: true, descendant: true } : { iv: s.r.iv, montant: true, descendant: true, alterations: !!s.r.alterations }, Math.random, s.it, clef);
   s.it = { ...q, clef }; s.etat = 'attend'; s.premier = null; s.faux = new Set(); s.bon = null;
   renderNoms();
 }
@@ -782,18 +823,23 @@ function renderNoms() {
   const { W, s, yb } = chantLayout(), H = Math.round(11.8 * s), col = S.etat === 'ok' ? DONE : S.etat === 'faux' ? RED : INK;
   $('systems').style.gap = '0px';
   $('systems').innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Deux notes en ${CLEFS[S.it.clef].nom} : ${S.input === 'toucher' ? 'toucher' : 'dire'} le nom de l'intervalle.">${porteeChant(S.it.notes, [col, col], -1, W, s, yb, S.it.clef)}</svg>`
-    + (S.input === 'toucher' ? choixHTML(S.r.iv.map((st) => [st, maj(INTERVALLES[st].nom)])) : '');
+    + (S.input === 'toucher' ? choixHTML(S.r.iv.map((st) => [st, INTERVALLES[st].court])) : '');
 }
 
 // ---------- réponses au toucher ----------
-// Les réponses proposées sont celles cochées dans les réglages. Une mauvaise réponse est barrée, on peut en toucher une autre ;
-// seule la première compte. La bonne est soulignée, puis vient la question suivante.
+// Les réponses proposées sont celles cochées dans les réglages, en notation. Une mauvaise réponse est barrée ; en reconnaissance,
+// la toucher à nouveau la fait entendre (même fondamentale), pour comparer. Seule la première réponse compte. Trouvée du
+// premier coup, la question suivante vient seule ; trouvée après une erreur, on reste : réécouter, écouter note après note
+// si c'était joué ensemble, comparer avec les réponses barrées, puis passer à la suite.
 function choixHTML(liste) {
-  return `<div id="choix">${liste.map(([v, t]) => `<button type="button" data-r="${v}" class="${S.faux.has(String(v)) ? 'faux' : S.bon === String(v) ? 'bon' : ''}"${S.faux.has(String(v)) ? ' disabled' : ''}>${t}</button>`).join('')}</div>`;
+  const ecoute = S.kind === 'reco';
+  return `<div id="choix">${liste.map(([v, t]) => { const f = S.faux.has(String(v)); return `<button type="button" data-r="${v}" class="${f ? 'faux' : S.bon === String(v) ? 'bon' : ''}"${f && !ecoute ? ' disabled' : ''}${f && ecoute ? ` aria-label="Écouter ${t}"` : ''}>${t}</button>`; }).join('')}</div>`;
 }
 function repondre(val) {
   const s = S;
-  if (!s || s.over || s.pause || s.etat === 'ok' || (s.kind !== 'reco' && !(s.kind === 'noms' && s.input === 'toucher'))) return;
+  if (!s || s.over || s.pause || (s.kind !== 'reco' && !(s.kind === 'noms' && s.input === 'toucher'))) return;
+  if (s.kind === 'reco' && s.faux.has(String(val))) { ecouterReponse(val); return; }
+  if (s.etat === 'ok') return;
   const juste = s.exo === 'rAccords' ? val === s.it.id : s.exo === 'rGammes' ? memesNotes(val, s.it.id) : +val === s.it.st;
   if (s.premier === null) {
     s.premier = juste;
@@ -801,16 +847,18 @@ function repondre(val) {
   }
   if (!juste) { s.faux.add(String(val)); s.etat = 'faux'; render(); ligne(); return; }
   s.etat = 'ok'; s.bon = String(val); s.n += 1;
+  if (s.kind === 'reco' && s.premier === false) s.attend = true;
   render(); ligne();
   if (s.v.length % 16 === 0) sauver(s);
+  if (s.attend) return;
   s.nextT = setTimeout(() => { if (S === s && !s.over) (s.kind === 'noms' ? suivantNom : suivantReco)(); }, s.kind === 'noms' ? 350 : 800);
 }
 
 // ---------- reconnaissance à l'oreille : intervalles, accords, gammes ----------
-// Le piano joue, on touche le nom de ce qu'on a entendu. Sans micro. « Réécouter » rejoue.
+// Le piano joue, on touche ce qu'on a entendu. Sans micro. L'icône du haut-parleur rejoue.
 async function startReco(exo) {
   const au = await ouvrirSon(false), banc = await chargerPiano(au.ctx), at = new Date().toISOString();
-  S = { kind: 'reco', exo, input: 'toucher', r: JSON.parse(JSON.stringify(prefs[exo])), banc, it: null, etat: 'attend', premier: null, faux: new Set(), bon: null, ecoutes: 0,
+  S = { kind: 'reco', exo, input: 'toucher', r: JSON.parse(JSON.stringify(prefs[exo])), banc, it: null, etat: 'attend', premier: null, faux: new Set(), bon: null, ecoutes: 0, attend: false,
     v: [], n: 0, over: false, pause: false, at, id: nouvelId(at), t0: performance.now() };
   $('systems').className = 'chant';
   suivantReco();
@@ -829,21 +877,41 @@ function suivantReco() {
     it = { ...q, jeu: 'mel', quoi: [q.id, q.racine, q.sens] };
   }
   it.quoi.push(it.jeu);
-  s.it = it; s.etat = 'attend'; s.premier = null; s.faux = new Set(); s.bon = null; s.ecoutes = 0;
+  s.it = it; s.etat = 'attend'; s.premier = null; s.faux = new Set(); s.bon = null; s.ecoutes = 0; s.attend = false;
   renderReco(); jouerReco();
 }
-function jouerReco() {
-  const s = S, n = s.it.notes.length, mel = s.it.jeu === 'mel', gamme = s.exo === 'rGammes';
+// Le son a pu être fermé pendant que la page était cachée : il se rouvre au premier son demandé.
+async function sonPret() {
+  const s = S;
+  if (AU && AU.ctx.state !== 'closed') return true;
+  try { await ouvrirSon(false); s.banc = await chargerPiano(AU.ctx); } catch (e) { return false; }
+  return S === s;
+}
+async function jouerNotes(notes, jeu) {
+  if (!(await sonPret())) return;
+  const n = notes.length, mel = jeu === 'mel', gamme = S.exo === 'rGammes';
   couper(AU.ctx);
-  s.it.notes.forEach((m, i) => jouer(AU.ctx, s.banc, m, mel ? (gamme ? 0.7 : 1.1) : 1.8, mel ? 0.9 : 0.9 / Math.sqrt(n), mel ? i * (gamme ? 0.38 : 0.6) : 0));
+  notes.forEach((m, i) => jouer(AU.ctx, S.banc, m, mel ? (gamme ? 0.7 : 1.1) : 1.8, mel ? 0.9 : 0.9 / Math.sqrt(n), mel ? i * (gamme ? 0.38 : 0.6) : 0));
+}
+const jouerReco = (jeu) => jouerNotes(S.it.notes, jeu || S.it.jeu);
+// Une réponse barrée, jouée sur la même fondamentale, dans le même sens et de la même façon que la question.
+function ecouterReponse(val) {
+  const it = S.it;
+  let notes;
+  if (S.exo === 'rIntervalles') notes = [it.ref, it.ref + it.sens * +val];
+  else if (S.exo === 'rAccords') notes = ACCORDS.find((a) => a.id === val).tons.map((t) => 48 + it.racine + t);
+  else { const h = [...GAMMES.find((g) => g.id === val).tons, 12].map((t) => 48 + it.racine + t); notes = it.sens > 0 ? h : h.reverse(); }
+  jouerNotes(notes, it.jeu);
 }
 function renderReco() {
   if (!S || S.kind !== 'reco' || !S.it) return;
-  const r = S.r, liste = S.exo === 'rIntervalles' ? r.iv.map((st) => [st, maj(INTERVALLES[st].nom)])
-    : S.exo === 'rAccords' ? ACCORDS.filter((a) => r.types.includes(a.id)).map((a) => [a.id, a.nom || a.signe])
-      : GAMMES.filter((g) => r.types.includes(g.id)).map((g) => [g.id, maj(g.nom)]);
+  const r = S.r, it = S.it, liste = S.exo === 'rIntervalles' ? r.iv.map((st) => [st, INTERVALLES[st].court])
+    : S.exo === 'rAccords' ? ACCORDS.filter((a) => r.types.includes(a.id)).map((a) => [a.id, chiffrage(it.racine, a.id, racineNom(it.racine, it.id))])   // une seule écriture de la fondamentale : celle de l'accord joué
+      : GAMMES.filter((g) => r.types.includes(g.id)).map((g) => [g.id, gammeCourt(g.id)]);
+  const b = (e, icone, label, cls = '') => `<button type="button" class="icone ${cls}" data-e="${e}" aria-label="${label}">${icone}</button>`;
+  const apres = S.attend ? (it.jeu === 'harm' ? b('suite', ICONE.suite(28), 'Les notes l\'une après l\'autre') : '') + b('suivant', ICONE.suivant(28), 'Question suivante') : '';
   $('systems').style.gap = '0px';
-  $('systems').innerHTML = '<button type="button" class="rejouer" data-e="rejouer">Réécouter</button>' + choixHTML(liste);
+  $('systems').innerHTML = b('rejouer', ICONE.ecouter(48), 'Réécouter', 'grand') + choixHTML(liste) + `<div id="apres">${apres}</div>`;
 }
 
 async function startEnreg() {
@@ -932,12 +1000,13 @@ function reglagesHTML() {
     }
   } else if (e === 'noms') {
     h += rang('Réponse', radios('noms.reponse', [['voix', 'À la voix'], ['toucher', 'Au toucher']], r.reponse));
+    h += rang('', coches('noms', [['alterations', 'Dièses et bémols']], (v) => !!r[v]));
     h += rang('Clé', radios('noms.clef', [['sol', 'Clé de sol'], ['fa', 'Clé de fa'], ['deux', 'Les deux']], r.clef));
     h += rang('Intervalles', coches('noms.iv', TOUS.map((st) => [st, INTERVALLES[st].court, INTERVALLES[st].nom]), (v) => r.iv.includes(v)));
     if (r.reponse !== 'toucher') h += '<button type="button" class="lien" data-a="serie">Enregistrer une série de plus</button>';
   } else if (e[0] === 'r') {
-    const gammes = (k) => rang('Gammes', coches(`${k}.types`, GAMMES.filter((g) => !g.mode).map((g) => [g.id, maj(g.nom)]), (v) => r.types.includes(v)))
-      + rang('Modes', coches(`${k}.types`, GAMMES.filter((g) => g.mode).map((g) => [g.id, maj(g.nom)]), (v) => r.types.includes(v)));
+    const gammes = (k) => rang('Gammes', coches(`${k}.types`, GAMMES.filter((g) => !g.mode).map((g) => [g.id, gammeCourt(g.id)]), (v) => r.types.includes(v)))
+      + rang('Modes', coches(`${k}.types`, GAMMES.filter((g) => g.mode).map((g) => [g.id, gammeCourt(g.id)]), (v) => r.types.includes(v)));
     if (e === 'rIntervalles') {
       h += rang('Intervalles', coches(`${e}.iv`, TOUS.map((st) => [st, INTERVALLES[st].court, INTERVALLES[st].nom]), (v) => r.iv.includes(v)));
       h += rang('Notes jouées', coches(e, [['melodique', 'L\'une après l\'autre'], ['harmonique', 'Ensemble']], (v) => !!r[v]));
@@ -952,8 +1021,8 @@ function reglagesHTML() {
     if (e === 'accords') {
       h += rang('Accords', coches('accords.types', ACCORDS.map((a) => [a.id, chiffrage(0, a.id)]), (v) => r.types.includes(v)));
     } else if (e === 'gammes') {
-      h += rang('Gammes', coches('gammes.types', GAMMES.filter((g) => !g.mode).map((g) => [g.id, maj(g.nom)]), (v) => r.types.includes(v)));
-      h += rang('Modes', coches('gammes.types', GAMMES.filter((g) => g.mode).map((g) => [g.id, maj(g.nom)]), (v) => r.types.includes(v)));
+      h += rang('Gammes', coches('gammes.types', GAMMES.filter((g) => !g.mode).map((g) => [g.id, gammeCourt(g.id)]), (v) => r.types.includes(v)));
+      h += rang('Modes', coches('gammes.types', GAMMES.filter((g) => g.mode).map((g) => [g.id, gammeCourt(g.id)]), (v) => r.types.includes(v)));
       h += rang('Sens', coches(e, [['montant', 'Montant'], ['descendant', 'Descendant']], (v) => !!r[v]));
     } else {
       h += rang('Intervalles', coches(`${e}.iv`, TOUS.map((st) => [st, INTERVALLES[st].court, INTERVALLES[st].nom]), (v) => r.iv.includes(v)));
@@ -971,16 +1040,17 @@ function reglagesHTML() {
 function ouvrirReglages() {
   if (!S || occupe) return;
   S.pause = true; clearTimeout(S.promptT);
-  if (AU) couper(AU.ctx);
+  if (AU) { couper(AU.ctx); if (S.kind !== 'enreg') AU.mic.coupe(); }
   if (S.kind === 'enreg' && S.phase === 'dire') S.phase = 'intro';     // une série interrompue est à refaire
   avant = JSON.stringify(prefs);
   $('reglages').innerHTML = reglagesHTML();
   $('sheet').hidden = false;
 }
-function fermerReglages() {
+async function fermerReglages() {
   $('sheet').hidden = true;
   if (!S) return;
   if (JSON.stringify(prefs) !== avant) { savePrefs(); lancer(S.exo); return; }
+  if (AU && !S.muet && S.input !== 'toucher' && S.input !== 'midi') { try { await AU.mic.rouvre(); } catch (e) { quitter(); say('Micro refusé.'); return; } }
   S.pause = false;
   if (S.kind === 'notes' && S.rec) S.tStart = S.rec.time;               // ce qui a été dit pendant les réglages ne compte pas
   if (S.kind === 'chant') { if (S.phase === 'tenu') suivant(); else { S.j = 0; S.cents = []; playRef(); } }
@@ -1063,7 +1133,12 @@ $('systems').addEventListener('click', (e) => {
   const c = e.target.closest('button[data-r]');
   if (c) { repondre(c.dataset.r); return; }
   const b = e.target.closest('button[data-e]');
-  if (b && b.dataset.e === 'rejouer' && S.kind === 'reco') { S.ecoutes += 1; jouerReco(); return; }
+  if (b && S.kind === 'reco') {
+    if (b.dataset.e === 'rejouer') { S.ecoutes += 1; jouerReco(); }
+    else if (b.dataset.e === 'suite') jouerReco('mel');
+    else if (b.dataset.e === 'suivant') suivantReco();
+    return;
+  }
   if (b && S.kind === 'enreg') {
     if (b.dataset.e === 'go') serie(); else if (b.dataset.e === 'imp') $('import').click(); else if (b.dataset.e === 'exo') lancer('noms'); else shareAudio();
   }
@@ -1084,8 +1159,9 @@ $('import').addEventListener('change', async (e) => {
 window.addEventListener('resize', render);
 // Page masquée : le micro est rendu. Une série enregistrée et pas encore partagée est gardée (le partage lui-même peut masquer la page).
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden || !S || S.input === 'midi' || S.input === 'toucher') return;
+  if (!document.hidden || !S || S.input === 'midi') return;
   if (S.kind === 'enreg' && S.phase === 'fin') return;
+  if (S.input === 'toucher') { if (AU) { couper(AU.ctx); fermerSon(); } return; }   // l'exercice reste, le son se rouvrira au retour
   quitter();
 });
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});

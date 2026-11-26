@@ -13,6 +13,14 @@ Adresse : https://hugolangepro.github.io/solfege/
   réglages de cet exercice ; à la fermeture il reprend, ou repart avec les nouveaux réglages. On change d'exercice depuis l'accueil.
 - Cinq touches rapides sur le titre activent le mode diagnostic : syllabes entendues à l'écran, et partage du son de la séance depuis les réglages.
 
+## Règles d'affichage (pour toute modification future)
+
+- Intervalles et accords toujours en notation standard abrégée, jamais en toutes lettres : 2m 2M 3m 3M 4 TT 5 6m 6M 7m 7M ;
+  accords en chiffrage jazz (C, C–, C+, C°, Csus4, C–7, C∆7, C7, C–∆7, C6). Seule exception : l'écran d'enregistrement des noms,
+  qui affiche le mot à prononcer. Gammes : maj, min, min harm, penta maj, penta min ; modes par leur nom.
+- Pas de texte quand une icône suffit (réglages, micro, écoute, notes ensemble, notes l'une après l'autre, suite).
+- Le moins d'éléments possible à l'écran ; une note fausse est rouge, sans autre marque.
+
 ## Lecture sans fin
 
 - Les portées gardent leur place. Dès que deux notes sont lues sur une portée, la portée précédente est remplacée par la suite ;
@@ -76,8 +84,10 @@ la note où l'on a buté reste rouge pendant ce temps. Rester sur la note préc�
 « Plaqué » et « Arpégé », en bas, font entendre toutes les notes ensemble ou l'une après l'autre ; on reprend ensuite à la première.
 La courbe de la voix se masque dans les réglages.
 
-Le micro de la barre, touché, coupe l'écoute (dans la lecture de notes aussi) : l'app ne tient plus compte de rien, le temps de chercher
-ses notes à part. Retouché, il la rétablit et l'exercice de chant reprend à sa première note. Le micro du navigateur, lui, reste ouvert.
+Le micro de la barre, touché, rend le micro (dans la lecture de notes aussi) : l'app n'entend plus rien, le témoin orange de
+l'iPhone s'éteint, le piano reste disponible. Retouché, il reprend le micro et l'exercice de chant repart de sa première note.
+Le micro est aussi rendu pendant que les réglages sont ouverts. Le son est fermé dès que la page est cachée ; quand il joue,
+le lecteur de l'écran verrouillé affiche « Solfège » et l'icône de l'app.
 
 - Intervalles : le nom de l'intervalle et son sens sont écrits, sans portée. Les onze intervalles, de la seconde mineure à la
   septième majeure, se cochent un par un, ainsi que montant et descendant. Par défaut on chante d'abord la note de départ.
@@ -97,7 +107,8 @@ Deux notes à la suite sur la portée (clé de sol, clé de fa ou les deux, inte
 Le bon nom grise les notes et amène l'intervalle suivant ; un autre nom les met en rouge jusqu'à la bonne réponse. Seule la
 première réponse compte dans la cadence et la justesse.
 
-Réponse à la voix ou au toucher (réglages) : au toucher, sans micro, les noms des intervalles cochés sont proposés sous la portée.
+Réponse à la voix ou au toucher (réglages) : au toucher, sans micro, les intervalles cochés sont proposés sous la portée.
+Par défaut, deux notes naturelles ; « Dièses et bémols » ajoute les intervalles altérés.
 
 À la voix, chaque nom dit est comparé à des exemples par alignement temporel (`noms.js`). L'app est livrée avec une voix de
 départ, `noms.json` : 122 exemples tirés de trois séries d'Hugo (Mac, AirPods, iPhone), chacun réduit à 12 coefficients cepstraux
@@ -124,8 +135,10 @@ les sept modes. Deux noms pour les mêmes notes (majeure et ionien, mineure et �
 
 ## Reconnaissance
 
-Le piano joue, on touche le nom de ce qu'on a entendu, parmi les réponses cochées dans les réglages. Sans micro.
-« Réécouter » rejoue. Une mauvaise réponse est barrée et l'on peut en toucher une autre ; seule la première compte.
+Le piano joue, on touche ce qu'on a entendu, parmi les réponses cochées dans les réglages (accords écrits sur la fondamentale
+jouée). Sans micro. Le haut-parleur rejoue. Une mauvaise réponse est barrée ; la retoucher la fait entendre sur la même fondamentale,
+pour comparer. Seule la première réponse compte. Trouvée du premier coup, la question suivante vient seule ; trouvée après une
+erreur, on reste sur la question (écoute note après note si c'était joué ensemble, flèche pour passer à la suite).
 
 - Intervalles : les deux notes l'une après l'autre ou ensemble, en montant ou en descendant.
 - Accords : les notes ensemble ou l'une après l'autre.
