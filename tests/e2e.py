@@ -6,6 +6,7 @@ from playwright.async_api import async_playwright
 from serveur import serveur
 
 ICI = os.path.dirname(os.path.abspath(__file__))
+SONS = []
 SEQ = open(os.path.join(ICI, 's13_seq.txt')).read().strip().split(',')
 WAV = os.environ.get('SOLFEGE_WAV', os.path.join(ICI, 's13_48k.wav'))
 BRUIT = os.path.join(ICI, 'clavier_44k.wav')          # frappe au clavier (ESC-50, pour l'essai seulement ; hors dépôt)
@@ -58,6 +59,8 @@ async def run(base, name, seq, viewport, wait_s, shots=True, debug=False, clef=N
         heard = await pg.evaluate("() => window.__solfege.session ? window.__solfege.session.heard.map(c => [c.cls, +c.conf.toFixed(2), Math.round(c.time * 1000), Math.round(c.delay * 1000), c.early ? 1 : 0]) : []")
         await pg.click('#quit'); await pg.wait_for_timeout(200)
         accueil = await pg.is_visible('#home')
+        global SONS
+        SONS = await pg.evaluate("async () => { let l = []; for (let k = 0; k < 20; k++) { l = await window.__solfege.sonListe(); if (l.length) break; await new Promise(r => setTimeout(r, 100)); } const m = []; for (const q of l) { const t = new Uint8Array(await q.blob.arrayBuffer()); let i = 12, meta = null; const dv = new DataView(t.buffer); while (i + 8 <= t.length) { const tag = String.fromCharCode(...t.subarray(i, i + 4)), n = dv.getUint32(i + 4, true); if (tag === 'sLFG') meta = JSON.parse(new TextDecoder().decode(t.subarray(i + 8, i + 8 + n))); i += 8 + n + (n & 1); } m.push([q.nom.slice(-14), Math.round(q.duree), meta && meta.debut, meta && meta.attendu.length, meta && meta.entendu.length]); } return m; }")
         stored = await pg.evaluate("() => JSON.parse(localStorage.getItem('solfege.sessions') || '[]')")
         await b.close()
         return state, result, errs, stored, diag, accueil, log, heard
@@ -147,4 +150,4 @@ async def main():
 
         pris, portee, titre, modele, msg, n, piano, errs = await service_worker(base, proc)
         print('E. service worker : page prise en charge', pris, '| serveur éteint → titre', repr(titre), '| modèle version', modele, '| piano en cache :', piano, 'octets | message', repr(msg), '| notes affichées au clavier :', n, '| erreurs :', errs)
-asyncio.run(main())
+if __name__ == "__main__": asyncio.run(main())

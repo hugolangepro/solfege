@@ -82,6 +82,13 @@ h1 { margin: 0; font-size: 44px; line-height: 1; font-weight: 400; font-style: i
 .compte { margin: 0; font-size: 15px; color: var(--soft); }
 #foot { width: 100%; max-width: 760px; padding-top: 8px; display: flex; flex-direction: column; align-items: center; gap: 8px; min-height: 44px; }
 #aides { display: flex; gap: 28px; }
+#clavier { position: relative; display: flex; width: 100%; max-width: 520px; height: 116px; touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+#clavier[hidden] { display: none; }
+#clavier .blanche { flex: 1; height: 100%; border: 1px solid var(--hair); border-radius: 0 0 7px 7px; background: #FBF8F1; margin-left: -1px; }
+#clavier .blanche.appuyee { background: #E4DCCB; }
+#clavier .noire { position: absolute; top: 0; height: 60%; pointer-events: none; width: calc(100% / 7 * 0.58); background: var(--ink); border-radius: 0 0 4px 4px; }
+.sons { display: flex; flex-wrap: wrap; gap: 4px 18px; justify-content: center; align-items: baseline; color: var(--soft); font-size: 15px; font-style: italic; }
+.sons button { min-height: 44px; font-style: normal; font-size: 16px; text-decoration: underline; text-underline-offset: 4px; color: var(--ink); }
 #result { margin: 0; text-align: center; font-size: 16px; font-style: italic; color: var(--soft); min-height: 1.4em; }
 #debug { width: 100%; max-width: 760px; margin: 0; font: 12px/1.4 ui-monospace, Menlo, monospace; color: var(--soft); white-space: pre-wrap; word-break: break-word; }
 #share { font: 13px/1.4 ui-monospace, Menlo, monospace; text-decoration: underline; min-height: 44px; }
@@ -139,6 +146,10 @@ h1 { margin: 0; font-size: 44px; line-height: 1; font-weight: 400; font-style: i
     <div id="aides" hidden>
       <button type="button" class="icone" data-h="plaque" aria-label="Toutes les notes ensemble"></button>
       <button type="button" class="icone" data-h="arpege" aria-label="Les notes l'une après l'autre"></button>
+    </div>
+    <div id="clavier" hidden aria-label="Clavier : une octave, de do à si">
+      <button type="button" class="blanche" data-t="0" aria-label="do"></button><button type="button" class="blanche" data-t="1" aria-label="ré"></button><button type="button" class="blanche" data-t="2" aria-label="mi"></button><button type="button" class="blanche" data-t="3" aria-label="fa"></button><button type="button" class="blanche" data-t="4" aria-label="sol"></button><button type="button" class="blanche" data-t="5" aria-label="la"></button><button type="button" class="blanche" data-t="6" aria-label="si"></button>
+      <i class="noire" style="left: calc(100% / 7 * 1 - 100% / 7 * 0.29)"></i><i class="noire" style="left: calc(100% / 7 * 2 - 100% / 7 * 0.29)"></i><i class="noire" style="left: calc(100% / 7 * 4 - 100% / 7 * 0.29)"></i><i class="noire" style="left: calc(100% / 7 * 5 - 100% / 7 * 0.29)"></i><i class="noire" style="left: calc(100% / 7 * 6 - 100% / 7 * 0.29)"></i>
     </div>
     <p id="result" role="status"></p>
     <pre id="debug" hidden></pre>

@@ -6,7 +6,7 @@ import { chargerPiano, jouer, couper } from './piano.js';
 import { Ecoute, Voix, traits, apprendre, emballer, deballer } from './noms.js';
 import { PER, P_MIN, P_MAX, CLEFS, INK, DONE, RED, GREEN, BLUE, SOFT, LINE, r2, noteInfo, metrics, systemSVG, miniPortee, porteeChant } from './portee.js';
 
-const VERSION = '2026-11-28.2';
+const VERSION = '2026-11-28.3';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
@@ -25,13 +25,13 @@ const TOL = +params.get('tol') || 50;                  // bande en cents
 const CHERCHE_MS = 2000;
 const PROMPT_MS = 2500, SERIE = 4;                     // enregistrement : un nom toutes les 2,5 s, chaque nom quatre fois par série
 const MAX_SESSIONS = 2000;                             // séances gardées sur l'appareil
-const DIAG_MAX = 16000 * 300;                          // son gardé : cinq minutes au plus
+const DIAG_MAX = 16000 * (+params.get('morceau') || 300);   // son gardé : par morceaux de cinq minutes
 
 // ---------- préférences ----------
 const TOUS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 const prefs = {
   exo: 'notes', tenue: 700, courbe: true, accordsVus: ACCORDS.map((a) => a.id),
-  notes: { clef: 'sol', input: 'voix', sol: [-2, 10], fa: [-2, 10] },
+  notes: { clef: 'sol', input: 'voix', sol: [-2, 10], fa: [-2, 10], garderSon: true },
   intervalles: { iv: TOUS.slice(), montant: true, descendant: true, depart: true },
   portee: { iv: TOUS.slice(), montant: true, descendant: true },
   accords: { types: ACCORDS.map((a) => a.id) },
@@ -170,7 +170,7 @@ function fermerSon() {
 }
 // En diagnostic, le son reçu est gardé (16 bits) ; le moteur écoute exactement ces échantillons : le rejeu hors de l'app donne le même résultat.
 function garder(s, y) {
-  if (s.pcmN >= DIAG_MAX) return y;
+  if (s.pcmN + y.length > DIAG_MAX) { if (s.garde) ranger(s); else return y; }
   const q = Int16Array.from(y, (v) => Math.max(-32768, Math.min(32767, Math.round(v * 32768))));
   s.pcm.push(q); s.pcmN += q.length;
   return Float32Array.from(q, (v) => v / 32768);
@@ -196,10 +196,10 @@ async function lancer(exo, opts = {}) {
     const pl = $('aides').querySelector('[data-h="plaque"]'), ar = $('aides').querySelector('[data-h="arpege"]');
     pl.hidden = S.exo === 'gammes'; pl.innerHTML = ICONE.ensemble();
     ar.innerHTML = S.exo === 'gammes' ? ICONE.ecouter() : ICONE.suite(); ar.setAttribute('aria-label', S.exo === 'gammes' ? 'Écouter la gamme' : 'Les notes l\'une après l\'autre');
-    $('mic').hidden = S.input === 'midi' || S.input === 'toucher' || S.kind === 'ml'; $('mic').disabled = S.kind === 'enreg'; $('mic').setAttribute('aria-pressed', 'false'); $('mic').setAttribute('aria-label', 'Couper le micro');
+    $('mic').hidden = direct(S) || S.input === 'toucher' || S.kind === 'ml'; $('clavier').hidden = !(S.kind === 'notes' && S.input === 'touches'); $('mic').disabled = S.kind === 'enreg'; $('mic').setAttribute('aria-pressed', 'false'); $('mic').setAttribute('aria-label', 'Couper le micro');
     show('page'); render(); ligne(); levelLoop();
     if (navigator.wakeLock && !verrou) navigator.wakeLock.request('screen').then((l) => { verrou = l; }).catch(() => {});
-    if (S && S.input !== 'midi' && S.input !== 'toucher') {
+    if (S && !direct(S) && S.input !== 'toucher') {
       // aucun son reçu après trois secondes : le contexte audio attend un geste, une touche sur la page le relance
       const mine = S;
       setTimeout(() => {
@@ -222,6 +222,7 @@ function arreter() {
   s.over = true; clearTimeout(s.commitT); clearTimeout(s.nextT); clearTimeout(s.promptT); clearTimeout(s.relance);
   if (s.mains) taire();
   if (AU) { AU.sink = null; couper(AU.ctx); }
+  if (s.kind === 'notes' && s.garde && s.pcmN) ranger(s);
   sauver(s);
   S = null;
 }
@@ -250,7 +251,8 @@ function noteAt(s, i) {
 }
 
 async function startNotes() {
-  const r = prefs.notes, input = TEST_MIDI || (r.input === 'midi' && midi.inputs().length) ? 'midi' : 'voix';
+  const r = prefs.notes;
+  const input = TEST_MIDI ? 'midi' : r.input === 'touches' ? 'touches' : r.input === 'midi' && midi.inputs().length ? 'midi' : 'voix';
   const clefs = r.clef === 'deux' ? ['sol', 'fa'] : [r.clef === 'fa' ? 'fa' : 'sol'];
   const at = new Date().toISOString();
   // ?seq= impose les premières notes (tests)
@@ -260,7 +262,7 @@ async function startNotes() {
   }) : null;
   const base = { kind: 'notes', exo: 'notes', input, mode: r.clef, clefs, et: { sol: r.sol.slice(), fa: r.fa.slice() }, notes: [], forced,
     over: false, pause: false, at, id: nouvelId(at), rec0: 0, saved: 0 };
-  if (input === 'midi') {
+  if (input !== 'voix') {                                  // clavier MIDI ou clavier à l'écran : pas de micro
     fermerSon();
     S = { ...base, v: [], k: 0, t0: performance.now() };
     return;
@@ -268,7 +270,8 @@ async function startNotes() {
   const au = await ouvrirSon(), model = await modelP;
   const rec = new Recognizer(model, params.has('tau') ? { tau: +params.get('tau') } : {});
   const bypass = !model.gate || gateOff === gateKey(model);
-  const s = { ...base, rec, model, heard: [], raw: [], bypass, pcm: [], pcmN: 0, level: 0, rate: au.ctx.sampleRate, tStart: 0, draw: DEBUG ? [] : null };
+  const s = { ...base, rec, model, heard: [], raw: [], bypass, pcm: [], pcmN: 0, level: 0, rate: au.ctx.sampleRate, tStart: 0, draw: DEBUG ? [] : null,
+    garde: r.garderSon !== false, debut: 0, partie: 0 };
   s.suivi = new Suivi((i) => noteAt(s, i).cls);
   // sans filtre : les détections du modèle des syllabes seul et leur propre suivi, pour surveiller le filtre
   s.shadow = bypass ? null : new Suivi((i) => noteAt(s, i).cls);
@@ -277,11 +280,12 @@ async function startNotes() {
   rec.onRaw = (c) => onRaw(s, c);
   au.lag = DEBUG ? [] : null;
   S = s;
-  au.sink = (y) => { if (!s.over) rec.push(DEBUG ? garder(s, y) : y); };
+  au.sink = (y) => { if (!s.over) rec.push(DEBUG || s.garde ? garder(s, y) : y); };
 }
 
-const lus = (s) => (s.input === 'midi' ? s.k : s.suivi.best());
-const verdictsDe = (s, a, b) => (s.input === 'midi' ? Array.from({ length: b - a }, (_, i) => s.v[a + i] ?? null) : s.suivi.verdicts(a, b));
+const direct = (s) => s.input === 'midi' || s.input === 'touches';
+const lus = (s) => (direct(s) ? s.k : s.suivi.best());
+const verdictsDe = (s, a, b) => (direct(s) ? Array.from({ length: b - a }, (_, i) => s.v[a + i] ?? null) : s.suivi.verdicts(a, b));
 function verdicts() { return S && S.kind === 'notes' ? verdictsDe(S, 0, lus(S)) : []; }
 
 // Taille des portées : la plus grande qui laisse tenir tous les systèmes dans la hauteur de l'écran.
@@ -290,7 +294,7 @@ function layout() {
   const cs = getComputedStyle($('page'));
   const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight), padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
   const W = Math.floor(Math.min(window.innerWidth - padX, 760));
-  const avail = window.innerHeight - padY - 44 - 52 - (DEBUG ? 60 : 0);
+  const avail = window.innerHeight - padY - 44 - 52 - (DEBUG ? 60 : 0) - (S.input === 'touches' ? 124 : 0);
   const H = (s) => metrics(s, S.clefs, S.et).H;
   let s = Math.min(Math.floor(W / 32 * 2) / 2, 20);
   while (s > 7 && nSys * H(s) + (nSys - 1) * 8 > avail) s -= 0.5;
@@ -402,6 +406,14 @@ function watchGate() {
   return w.filter((q) => !passed(q.det)).length >= 2;
 }
 
+// Clavier à l'écran : une octave, la note est jugée par son nom (comme à la voix), quelle que soit l'octave écrite.
+function onTouche(cls) {
+  if (!S || S.over || S.pause || S.kind !== 'notes' || S.input !== 'touches') return;
+  const n = noteAt(S, S.k);
+  S.v[S.k] = { v: cls === n.cls ? 'ok' : 'faux', cls, time: (performance.now() - S.t0) / 1000 };
+  S.k += 1;
+  render(); ligne(); jalon(S);
+}
 function onMidiNote(note) {
   if (!S || S.over || S.pause || S.kind !== 'notes' || S.input !== 'midi') return;
   const n = noteAt(S, S.k);
@@ -420,10 +432,10 @@ function levelLoop() {
     $('niveau').setAttribute('fill-opacity', String(Math.round(l * 100) / 100));
     requestAnimationFrame(tick);
   };
-  if (mine && mine.input !== 'midi') tick();
+  if (mine && !direct(mine)) tick();
 }
 async function micro() {
-  if (!S || S.over || S.pause || S.input === 'midi' || S.kind === 'enreg') return;
+  if (!S || S.over || S.pause || direct(S) || S.kind === 'enreg') return;
   S.muet = !S.muet;
   const marque = () => { $('mic').setAttribute('aria-pressed', String(S.muet)); $('mic').setAttribute('aria-label', S.muet ? 'Rétablir le micro' : 'Couper le micro'); };
   marque();
@@ -511,46 +523,98 @@ function saveSession(rec) {
 }
 
 // Un seul fichier à partager : le son tel que l'app l'a reçu (WAV, 16 kHz, mono), suivi d'un bloc « sLFG » qui porte le compte rendu en JSON.
-function diagFile() {
-  if (!S || !S.pcm) return null;
-  const commun = { app: VERSION, exercice: S.exo, at: S.at, ua: navigator.userAgent,
+function diagFile(s = S) {
+  if (!s || !s.pcm) return null;
+  const commun = { app: VERSION, exercice: s.exo, at: s.at, ua: navigator.userAgent,
     installee: (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true,
-    rate: S.rate, micro: AU ? AU.mic.info : null, tronque: S.pcmN >= DIAG_MAX, livraison: stats(AU && AU.lag) };
+    rate: s.rate, micro: AU ? AU.mic.info : null, tronque: s.pcmN >= DIAG_MAX, livraison: stats(AU && AU.lag) };
   let meta;
-  if (S.kind === 'enreg') {
+  if (s.kind === 'enreg') {
     // par mot affiché : instant d'affichage (ms depuis le début du son), mot
-    meta = { ...commun, vocabulaire: S.vocab, periode: PROMPT_MS, phrases: S.journal };
-  } else if (S.kind === 'noms') {
+    meta = { ...commun, vocabulaire: s.vocab, periode: PROMPT_MS, phrases: s.journal };
+  } else if (s.kind === 'noms') {
     // par énoncé entendu : instant (ms), nom le plus proche, distance, 1 s'il a été retenu
-    meta = { ...commun, seuil: S.seuil, exemples: S.voix.ex.length, entendu: S.entendu };
-  } else if (S.kind === 'chant') {
-    meta = { ...commun, tol: TOL, tenue: S.hold.holdMs, reglages: S.r,
+    meta = { ...commun, seuil: s.seuil, exemples: s.voix.ex.length, entendu: s.entendu };
+  } else if (s.kind === 'chant') {
+    meta = { ...commun, tol: TOL, tenue: s.hold.holdMs, reglages: s.r,
       // par exercice chanté : ce qui était demandé, temps (ms), écart médian de chaque note (cents), réécoutes
-      resultats: S.results.map((r) => [r.quoi, r.ms, r.cents, r.replays, r.reprises, r.aides]) };
+      resultats: s.results.map((r) => [r.quoi, r.ms, r.cents, r.replays, r.reprises, r.aides]) };
   } else {
-    const n = Math.min(S.notes.length, S.suivi.best() + 48);
-    meta = { ...commun, modele: { version: S.model.version, trained: S.model.trained },
-      ecran: [window.innerWidth, window.innerHeight, window.devicePixelRatio], tStart: S.tStart, mode: S.mode,
-      attendu: S.notes.slice(0, n).map((q) => SYLLABES[q.cls]), clefs: S.notes.slice(0, n).map((q) => (q.clef === 'fa' ? 1 : 0)),
+    const n = Math.min(s.notes.length, s.suivi.best() + 48);
+    meta = { ...commun, modele: { version: s.model.version, trained: s.model.trained },
+      ecran: [window.innerWidth, window.innerHeight, window.devicePixelRatio], tStart: s.tStart, mode: s.mode,
+      attendu: s.notes.slice(0, n).map((q) => SYLLABES[q.cls]), clefs: s.notes.slice(0, n).map((q) => (q.clef === 'fa' ? 1 : 0)),
       // par syllabe entendue : instant (ms), syllabe, confiance, son écoulé avant la reconnaissance (ms), 1 si reconnue sans attendre le sommet
-      entendu: S.heard.map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100, Math.round(c.delay * 1000), c.early ? 1 : 0]),
-      dessin: stats(S.draw),
+      entendu: s.heard.map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100, Math.round(c.delay * 1000), c.early ? 1 : 0]),
+      dessin: stats(s.draw),
       // filtre « syllabe dite ou autre son » : son seuil, s'il a été coupé, et les détections du modèle seul (pour voir ce qu'il a écarté)
-      filtre: S.model.gate ? { tau: S.rec.tau, coupe: S.bypass, cle: gateKey(S.model) } : null,
-      brut: (S.bypass ? [] : S.raw).map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100]),
-      verdicts: verdicts().map((q) => (q ? q.v : null)) };
+      filtre: s.model.gate ? { tau: s.rec.tau, coupe: s.bypass, cle: gateKey(s.model) } : null,
+      brut: (s.bypass ? [] : s.raw).map((c) => [Math.round(c.time * 1000), SYLLABES[c.cls], Math.round(c.conf * 100) / 100]),
+      verdicts: verdictsDe(s, 0, lus(s)).map((q) => (q ? q.v : null)),
+      // ce morceau commence à `debut` secondes du début de la séance (une longue séance est gardée en morceaux de cinq minutes)
+      debut: s.debut || 0 };
   }
   const json = new TextEncoder().encode(JSON.stringify(meta));
-  const n = S.pcm.reduce((a, c) => a + c.length, 0), pad = json.length % 2;
+  const n = s.pcm.reduce((a, c) => a + c.length, 0), pad = json.length % 2;
   const buf = new ArrayBuffer(44 + 2 * n + 8 + json.length + pad), b = new DataView(buf);
   const w = (o, t) => { for (let i = 0; i < t.length; i++) b.setUint8(o + i, t.charCodeAt(i)); };
   w(0, 'RIFF'); b.setUint32(4, buf.byteLength - 8, true); w(8, 'WAVEfmt '); b.setUint32(16, 16, true); b.setUint16(20, 1, true); b.setUint16(22, 1, true);
   b.setUint32(24, 16000, true); b.setUint32(28, 32000, true); b.setUint16(32, 2, true); b.setUint16(34, 16, true); w(36, 'data'); b.setUint32(40, 2 * n, true);
   let o = 44;
-  for (const c of S.pcm) for (let i = 0; i < c.length; i++) { b.setInt16(o, c[i], true); o += 2; }
+  for (const c of s.pcm) for (let i = 0; i < c.length; i++) { b.setInt16(o, c[i], true); o += 2; }
   w(o, 'sLFG'); b.setUint32(o + 4, json.length, true); new Uint8Array(buf, o + 8, json.length).set(json);
-  return new File([buf], `solfege-${S.exo}-${S.at.replace(/[:.]/g, '-')}.wav`, { type: 'audio/wav' });
+  return new File([buf], `solfege-${s.exo}-${s.at.replace(/[:.]/g, '-')}${s.partie ? `-${s.partie + 1}` : ''}.wav`, { type: 'audio/wav' });
 }
+// ---------- son des séances gardé sur l'appareil ----------
+// Pour réentraîner la reconnaissance des notes : le son des séances de lecture à la voix, avec ce qui était écrit et ce que
+// l'app a entendu, est gardé sur l'appareil (12 morceaux de cinq minutes au plus, les plus anciens partent). Rien ne quitte
+// l'appareil sans passer par le partage, dans les réglages.
+const SONS_MAX = 12;
+function baseSons() {
+  return new Promise((ok, ko) => {
+    const r = indexedDB.open('solfege-son', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('morceaux', { keyPath: 'nom' });
+    r.onsuccess = () => ok(r.result); r.onerror = () => ko(r.error);
+  });
+}
+const resultat = (req) => new Promise((ok, ko) => { req.onsuccess = () => ok(req.result); req.onerror = () => ko(req.error); });
+async function sonListe() {
+  const db = await baseSons(), l = await resultat(db.transaction('morceaux').objectStore('morceaux').getAll());
+  return l.sort((a, b) => a.at - b.at);
+}
+async function sonGarder(f, duree) {
+  const db = await baseSons();
+  const mettre = () => resultat(db.transaction('morceaux', 'readwrite').objectStore('morceaux').put({ nom: f.name, at: Date.now(), duree, blob: f }));
+  try { await mettre(); } catch (e) { const l = await sonListe(); if (l.length) await resultat(db.transaction('morceaux', 'readwrite').objectStore('morceaux').delete(l[0].nom)); await mettre(); }
+  const l = await sonListe();
+  for (const q of l.slice(0, Math.max(0, l.length - SONS_MAX))) await resultat(db.transaction('morceaux', 'readwrite').objectStore('morceaux').delete(q.nom));
+}
+async function sonEffacer() { const db = await baseSons(); await resultat(db.transaction('morceaux', 'readwrite').objectStore('morceaux').clear()); }
+// Le morceau en cours part sur l'appareil (s'il dure 20 s au moins) et un nouveau commence.
+function ranger(s) {
+  const duree = s.pcmN / 16000;
+  if (duree >= Math.min(20, DIAG_MAX / 32000)) { const f = diagFile(s); s.rangement = sonGarder(f, duree).catch((e) => console.warn('son non gardé', e)); }
+  s.debut = (s.debut || 0) + duree; s.pcm = []; s.pcmN = 0; s.partie = (s.partie || 0) + 1;
+}
+// Réglages : nombre de morceaux gardés, partage et effacement. Le partage doit partir du toucher même : la liste est lue avant.
+let sonsPrets = [];
+async function majSons() {
+  const el = $('sons');
+  if (!el) return;
+  try { sonsPrets = await sonListe(); } catch (e) { sonsPrets = []; }
+  if (!$('sons')) return;
+  const min = Math.round(sonsPrets.reduce((a, q) => a + q.duree, 0) / 60);
+  $('sons').innerHTML = sonsPrets.length
+    ? `<span>${sonsPrets.length} enregistrement${sonsPrets.length > 1 ? 's' : ''} · ${min} min</span><button type="button" data-a="sonsPart">Partager</button><button type="button" data-a="sonsEff">Effacer</button>`
+    : '<span>Aucun enregistrement</span>';
+}
+async function partagerSons() {
+  const files = sonsPrets.map((q) => new File([q.blob], q.nom, { type: 'audio/wav' }));
+  if (!files.length) return;
+  try { if (navigator.canShare && navigator.canShare({ files })) { await navigator.share({ files }); return; } } catch (e) { if (e && e.name === 'AbortError') return; }
+  for (const f of files) { const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; document.body.appendChild(a); a.click(); a.remove(); }
+}
+
 async function shareAudio() {
   const f = (S && S.kind === 'enreg' && S.fichier) || diagFile();
   if (!f) return;
@@ -1232,10 +1296,9 @@ function reglagesHTML() {
   if (e === 'notes') {
     h += rang('Clé', radios('notes.clef', [['sol', 'Clé de sol'], ['fa', 'Clé de fa'], ['deux', 'Les deux']], r.clef));
     h += rang('Étendue', (r.clef === 'deux' ? ['sol', 'fa'] : [r.clef]).map(etendueHTML).join(''));
-    if (navigator.requestMIDIAccess) {
-      h += rang('Réponse', radios('notes.input', [['voix', 'À la voix'], ['midi', 'Au clavier']], r.input));
-      if (r.input === 'midi' && !midi.inputs().length) h += `<p class="consigne">${midi.refus ? 'Accès MIDI refusé par le navigateur.' : 'Aucun clavier MIDI détecté. Branche-le : la lecture reste à la voix en attendant.'}</p>`;
-    }
+    h += rang('Réponse', radios('notes.input', [['voix', 'À la voix'], ['touches', 'Au toucher'], ...(navigator.requestMIDIAccess ? [['midi', 'Clavier MIDI']] : [])], r.input));
+    if (r.input === 'midi' && !midi.inputs().length) h += `<p class="consigne">${midi.refus ? 'Accès MIDI refusé par le navigateur.' : 'Aucun clavier MIDI détecté. Branche-le : la lecture reste à la voix en attendant.'}</p>`;
+    if (r.input === 'voix') h += rang('Son des séances', coches('notes', [['garderSon', 'Garder pour améliorer la reconnaissance']], (v) => !!r[v]) + '<div id="sons" class="sons"></div>');
   } else if (e === 'noms') {
     h += rang('Réponse', radios('noms.reponse', [['voix', 'À la voix'], ['toucher', 'Au toucher']], r.reponse));
     h += rang('', coches('noms', [['alterations', 'Dièses et bémols']], (v) => !!r[v]));
@@ -1283,15 +1346,17 @@ function ouvrirReglages() {
   S.pause = true; clearTimeout(S.promptT);
   if (AU) { couper(AU.ctx); if (S.kind !== 'enreg') AU.mic.coupe(); }
   if (S.kind === 'enreg' && S.phase === 'dire') S.phase = 'intro';     // une série interrompue est à refaire
+  if (S.kind === 'notes' && S.garde && S.pcmN) ranger(S);              // ce qui a été lu jusqu'ici est partageable tout de suite
   avant = JSON.stringify(prefs);
   $('reglages').innerHTML = reglagesHTML();
   $('sheet').hidden = false;
+  majSons();
 }
 async function fermerReglages() {
   $('sheet').hidden = true;
   if (!S) return;
   if (JSON.stringify(prefs) !== avant) { savePrefs(); lancer(S.exo); return; }
-  if (AU && !S.muet && S.input !== 'toucher' && S.input !== 'midi') { try { await AU.mic.rouvre(); } catch (e) { quitter(); say('Micro refusé.'); return; } }
+  if (AU && !S.muet && S.input !== 'toucher' && !direct(S)) { try { await AU.mic.rouvre(); } catch (e) { quitter(); say('Micro refusé.'); return; } }
   S.pause = false;
   if (S.kind === 'notes' && S.rec) S.tStart = S.rec.time;               // ce qui a été dit pendant les réglages ne compte pas
   if (S.kind === 'chant') { if (S.phase === 'tenu') suivant(); else { S.j = 0; S.cents = []; playRef(); } }
@@ -1300,6 +1365,11 @@ async function fermerReglages() {
 function reglage(b) {
   const a = b.dataset.a, k = b.dataset.k, v = b.dataset.v;
   if (a === 'part') { shareAudio(); return; }
+  if (a === 'sonsPart') { partagerSons(); return; }
+  if (a === 'sonsEff') {
+    if (!b.dataset.sur) { b.dataset.sur = '1'; b.textContent = 'Effacer : sûr ?'; return; }
+    sonEffacer().catch(() => {}).then(majSons); return;
+  }
   if (a === 'serie') { $('sheet').hidden = true; savePrefs(); lancer('enreg', { vocab: 'noms' }); return; }
   if (a === 'set') {
     const [e, c] = k.split('.'); prefs[e][c] = v;
@@ -1327,6 +1397,7 @@ function reglage(b) {
     }
   }
   $('reglages').innerHTML = reglagesHTML();
+  majSons();
 }
 
 // ---------- clavier MIDI ----------
@@ -1350,8 +1421,23 @@ const midi = {
 // ---------- démarrage ----------
 modelP = fetch('model.json').then((r) => { if (!r.ok) throw new Error('modèle vocal introuvable'); return r.json(); }).then(loadModel);
 modelP.catch((e) => say('Chargement impossible : ' + e.message));
-if (navigator.requestMIDIAccess) { if (prefs.notes.input === 'midi') midi.open().catch(() => {}); } else prefs.notes.input = 'voix';
+if (navigator.requestMIDIAccess) { if (prefs.notes.input === 'midi') midi.open().catch(() => {}); } else if (prefs.notes.input === 'midi') prefs.notes.input = 'voix';
 $('liste').addEventListener('click', (e) => { const b = e.target.closest('button[data-exo]'); if (b) lancer(b.dataset.exo); });
+$('clavier').addEventListener('pointerdown', (e) => {
+  const k = e.target.closest('[data-t]');
+  if (!k) return;
+  e.preventDefault();
+  k.classList.add('appuyee'); setTimeout(() => k.classList.remove('appuyee'), 120);
+  onTouche(+k.dataset.t);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || !S || S.input !== 'touches' || !$('sheet').hidden) return;
+  const i = ['KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyG', 'KeyH', 'KeyJ'].indexOf(e.code);   // rangée du milieu, quelle que soit la disposition
+  if (i < 0) return;
+  const k = $('clavier').querySelector(`[data-t="${i}"]`);
+  k.classList.add('appuyee'); setTimeout(() => k.classList.remove('appuyee'), 120);
+  onTouche(i);
+});
 $('mainslibres').innerHTML = ICONE.ecouteurs(36);
 $('mainslibres').addEventListener('click', () => lancer('ml'));
 // cinq touches rapides sur le titre : active ou coupe le mode diagnostic (son partageable, syllabes entendues)
@@ -1409,7 +1495,7 @@ $('import').addEventListener('change', async (e) => {
 window.addEventListener('resize', render);
 // Page masquée : le micro est rendu. Une série enregistrée et pas encore partagée est gardée (le partage lui-même peut masquer la page).
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden || !S || S.input === 'midi') return;
+  if (!document.hidden || !S || direct(S)) return;
   if (S.kind === 'enreg' && S.phase === 'fin') return;
   if (S.input === 'toucher') { if (AU) { couper(AU.ctx); fermerSon(); } return; }   // l'exercice reste, le son se rouvrira au retour
   quitter();
@@ -1417,4 +1503,4 @@ document.addEventListener('visibilitychange', () => {
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
 // ?mains-libres (deuxième icône, raccourci) : on arrive sur l'écran Mains libres
 if (params.has('mains-libres')) lancer('ml');
-window.__solfege = { VERSION, prefs, get session() { return S; }, entendu: (id, cls) => { const s = S; if (!s) return; if (id === 'commandes') { if (s.kind === 'menuML') entendreMenuTest(s, cls); else commande(s, cls); } else if (s.kind === 'reco') repondre(id === 'noms' ? String(cls + 1) : cls); }, get son() { return AU; }, verdicts, onMidiNote, diagFile, get gateOff() { return gateOff; } };
+window.__solfege = { VERSION, prefs, sonListe, get session() { return S; }, entendu: (id, cls) => { const s = S; if (!s) return; if (id === 'commandes') { if (s.kind === 'menuML') entendreMenuTest(s, cls); else commande(s, cls); } else if (s.kind === 'reco') repondre(id === 'noms' ? String(cls + 1) : cls); }, get son() { return AU; }, verdicts, onMidiNote, diagFile, get gateOff() { return gateOff; } };

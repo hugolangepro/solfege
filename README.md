@@ -1,6 +1,6 @@
 # Solfège
 
-App web personnelle de solfège. Lecture de notes : la page affiche quatre portées en clé de sol ou en clé de fa, ou trois systèmes de piano (les deux clés ensemble) ; on répond à la voix (do, ré, mi, fa, sol, la, si) ou au clavier MIDI. Chant d'intervalles : une note sonne, on chante la seconde, la hauteur de la voix se lit en direct.
+App web personnelle de solfège. Lecture de notes : la page affiche quatre portées en clé de sol ou en clé de fa, ou trois systèmes de piano (les deux clés ensemble) ; on répond à la voix (do, ré, mi, fa, sol, la, si), au toucher (un clavier d'une octave, do à si, sous les portées) ou au clavier MIDI. Chant d'intervalles : une note sonne, on chante la seconde, la hauteur de la voix se lit en direct.
 
 ## Utiliser
 
@@ -54,6 +54,9 @@ qu'après un geste.
   lues, les verdicts des plus anciennes sont figés et la fenêtre repart 8 notes en arrière en rejouant les dernières syllabes.
   Sur 2000 notes simulées, les verdicts sont ceux d'un alignement unique sur toute la séquence.
 - En bas : cadence et justesse sur les 32 dernières notes. La séance est gardée toutes les 32 notes et à la sortie.
+- Réponse au toucher (Réglages › Réponse › Au toucher) : un clavier d'une octave, do à si, sous les portées, pour lire là où on
+  ne peut pas parler. Seule la note compte, pas l'octave. Le micro reste fermé. Sur Mac, la rangée du milieu joue do à si : Q S D F G H J en AZERTY
+  (A S D F G H J en QWERTY).
 
 ## Mise en ligne
 
@@ -69,6 +72,12 @@ L'app revalide ses fichiers à chaque ouverture : la nouvelle version arrive au 
 - Une page : identifiant, date, mode (`sol`, `fa`, `piano`), façon de répondre, notes justes, fausses, non entendues, durée de lecture, cadence, précision. Une note : `[clé (0 sol, 1 fa), position sur la portée (0 = ligne du bas), verdict (1 juste, 0 faux, -1 non entendue, null non lue), réponse (syllabe 0 à 6 à la voix, numéro MIDI au clavier), instant en ms]`.
 - La cadence se mesure entre la première et la dernière réponse : le temps de réaction avant la première note n'y entre pas.
 - Fichier de diagnostic : un WAV (16 kHz, mono) du son tel que l'app l'a reçu, suivi d'un bloc `sLFG` qui porte en JSON les notes attendues, les syllabes entendues, les verdicts, le navigateur et les réglages du micro. `node tests/diag.mjs fichier.wav` le relit et repasse le son dans le moteur.
+- Son des séances (Lecture › Notes › Réglages › Son des séances, à la voix seulement, actif par défaut) : le son des lectures à la
+  voix est gardé sur l'appareil (IndexedDB `solfege-son`) par morceaux de cinq minutes, chacun au format du fichier de diagnostic ;
+  12 morceaux au plus, les plus anciens partent. Les instants du JSON comptent depuis le début de la séance, `debut` donne celui du
+  morceau (en s). Un reste de moins de 20 s n'est pas gardé. « Partager » envoie tous les morceaux (feuille de partage d'iOS),
+  « Effacer » demande une confirmation. Rien ne quitte l'appareil sans ce partage. Ces fichiers servent à réentraîner le modèle des
+  notes ; ils ne vont jamais dans le dépôt. Pour tester le découpage : `?morceau=10` (morceaux de 10 s).
 
 ## Fichiers
 
