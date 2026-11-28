@@ -55,6 +55,15 @@ async def main():
             await pg.evaluate("() => window.__solfege.entendu('commandes', 'accords')"); await pg.wait_for_timeout(1500); m3 = await pg.evaluate(ETAT)
             await pg.evaluate("() => window.__solfege.entendu('commandes', 'réponse')"); await pg.wait_for_timeout(100); m4 = await pg.evaluate(ETAT)
             print('menu vocal :', m1['kind'], 'niveau', m1['niveau'], '| « chant » → niveau', m2['niveau'], m2['famille'], '| « accords » →', m3['kind'], m3['exo'], 'mains', m3['mains'], 'accord', m3['it'], 'phase', m3['phase'], '| « réponse » → phase', m4['phase'], '| erreurs', errs)
+            # « stop », puis « reconnaissance » « intervalles » (voix livrée) : reconnaissance d'intervalles à la voix
+            await pg.evaluate("() => { window.__solfege.session.vocs.commandes = {}; window.__solfege.entendu('commandes', 'stop'); }"); await pg.wait_for_timeout(900)
+            question = await pg.inner_text('#systems .mot')
+            await pg.evaluate("() => window.__solfege.entendu('commandes', 'reconnaissance')"); await pg.wait_for_timeout(100); m6 = await pg.evaluate(ETAT)
+            await pg.evaluate("() => window.__solfege.entendu('commandes', 'intervalles')"); await pg.wait_for_timeout(1500); m7 = await pg.evaluate(ETAT)
+            print('menu vocal :', repr(question), '| « reconnaissance » → niveau', m6['niveau'], m6['famille'], '| « intervalles » →', m7['kind'], m7['exo'], 'mains', m7['mains'], '| erreurs', errs)
+            await pg.evaluate("() => { window.__solfege.session.vocs.commandes = {}; window.__solfege.entendu('commandes', 'stop'); }"); await pg.wait_for_timeout(900)
+            await pg.evaluate("() => window.__solfege.entendu('commandes', 'chant')"); await pg.wait_for_timeout(100)
+            await pg.evaluate("() => window.__solfege.entendu('commandes', 'accords')"); await pg.wait_for_timeout(1500)
             await pg.evaluate("() => window.__solfege.entendu('commandes', 'stop')"); await pg.wait_for_timeout(700)
             m5 = await pg.evaluate(ETAT)
             print('« stop » dans le chant sans voix de commandes →', m5['kind'], '| micro rendu :', await pg.evaluate("() => window.__solfege.son === null"))
@@ -79,4 +88,5 @@ async def main():
             c = await pg.evaluate(ETAT); o = await pg.evaluate('() => window.__osc')
             print("chant d'accords mains libres :", c['kind'], 'mains', c['mains'], '| trouvés', c['n'], '| sons émis (déclics et juste)', o, '| erreurs', errs)
             await b.close()
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

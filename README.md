@@ -15,19 +15,26 @@ Adresse : https://hugolangepro.github.io/solfege/
 
 ## Mains libres
 
-Pour s'exercer sans regarder l'écran (en voiture, écouteurs) : écoute d'intervalles, d'accords et de gammes, chant d'intervalles,
-d'accords et de gammes. Entrées : l'icône d'écouteurs de l'accueil ; l'adresse `?mains-libres` ; la page `mains-libres/`, à
+Pour s'exercer sans regarder l'écran (en voiture, écouteurs). Mêmes noms qu'à l'accueil : Chant (Intervalles, Accords, Gammes)
+et Reconnaissance (Intervalles, Accords, Gammes) ; Lecture et Chant › Portée demandent l'écran et n'y sont pas. Entrées : l'icône d'écouteurs de l'accueil ; l'adresse `?mains-libres` ; la page `mains-libres/`, à
 ajouter à l'écran d'accueil pour une deuxième icône (sur iPhone, chaque icône a ses propres données : réglages et séries
 enregistrées ne sont pas partagés). Un toucher sur l'exercice est nécessaire au départ : iOS n'autorise le son et la voix
 qu'après un geste.
 
 - L'app dit l'exercice avec la voix du téléphone ; on répond à voix haute ; un son dit juste (deux notes qui montent) ou faux
-  (deux notes graves). En écoute, au deuxième faux l'app dit la réponse ; sans réponse au bout de 8 s, l'exercice est rejoué.
+  (deux notes graves). En reconnaissance, au deuxième faux l'app dit la réponse ; sans réponse au bout de 8 s, l'exercice est rejoué.
   En chant, un déclic à chaque note tenue, le son juste à la fin ; une reprise est annoncée par le son faux.
 - Commandes : « encore », « suivant », « réponse », « stop ». « Stop » ramène au choix de l'exercice à la voix
-  (« écoute » ou « chant », puis « intervalles », « accords » ou « gammes ») ; « stop » au choix finit le mode.
+  (« chant » ou « reconnaissance », puis « intervalles », « accords » ou « gammes ») ; « stop » au choix finit le mode.
+  Le mot « écoute » des séries de commandes enregistrées avant le 28 novembre (.4) vaut encore « reconnaissance ».
 - Le micro ignore ce que l'app joue ou dit (fenêtres de silence, plus 0,3 s d'écho).
-- Vocabulaires à enregistrer sur l'écran Mains libres, rubrique « Ma voix » : commandes (9 mots), noms d'accords (12, tels que
+- Son gardé vivant : sur iPhone, la voix de l'app peut interrompre le son de la page (le piano se tait, le micro ne rend plus
+  rien). Après chaque énoncé, puis toutes les secondes, l'app vérifie que le contexte audio tourne, que la piste du micro vit,
+  n'est pas muette et rend du son (un son exactement nul pendant 4 s compte comme une panne) ; sinon elle relance le contexte
+  et reprend le micro. Trois remises sans effet : « Le micro ne répond pas. Touche l'écran. » ; le toucher fait la remise
+  avec un geste. Chaque événement va dans un journal (`journal` du fichier de diagnostic, mode diagnostic). Test :
+  `tests/e2e_remise.py` (voix factice qui suspend le contexte et termine la piste du micro).
+- Vocabulaires à enregistrer sur l'écran Mains libres, rubrique « Enregistrer ma voix » : commandes (9 mots : encore, suivant, réponse, stop, chant, reconnaissance, intervalles, accords, gammes), noms d'accords (12, tels que
   dits : majeur, mineur, augmenté, triade diminuée, sus 4, mineur 7, maj 7, 7, mineur maj 7, 6, semi-diminué, diminué), noms de
   gammes (12). Les noms d'intervalles sont déjà livrés (`noms.json`). Les séries partagées par l'app pourront être livrées de la
   même façon (`livre` dans `VOCABS`).

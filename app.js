@@ -6,7 +6,7 @@ import { chargerPiano, jouer, couper } from './piano.js';
 import { Ecoute, Voix, traits, apprendre, emballer, deballer } from './noms.js';
 import { PER, P_MIN, P_MAX, CLEFS, INK, DONE, RED, GREEN, BLUE, SOFT, LINE, r2, noteInfo, metrics, systemSVG, miniPortee, porteeChant } from './portee.js';
 
-const VERSION = '2026-11-28.3';
+const VERSION = '2026-11-28.4';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
@@ -112,7 +112,11 @@ async function openMic(ctx, onSamples) {
       node.onaudioprocess = (e) => onSamples(new Float32Array(e.inputBuffer.getChannelData(0)));
     }
     node.connect(mute);
-    const brancher = () => { src = ctx.createMediaStreamSource(stream); src.connect(node); };
+    const brancher = () => {
+      src = ctx.createMediaStreamSource(stream); src.connect(node);
+      const tr = stream.getAudioTracks()[0];
+      if (tr) { tr.onmute = () => noter('piste du micro muette'); tr.onunmute = () => noter('piste du micro rendue'); tr.onended = () => noter('piste du micro finie'); }
+    };
     brancher();
     const track = stream.getAudioTracks()[0];
     const st = track && track.getSettings ? track.getSettings() : {};
@@ -121,6 +125,7 @@ async function openMic(ctx, onSamples) {
     return {
       info,
       get ouvert() { return !!stream; },
+      get piste() { return stream ? stream.getAudioTracks()[0] || null : null; },
       coupe() { if (!stream) return; try { src.disconnect(); } catch (e) { /* déjà débranché */ } rendre(stream); stream = null; },
       async rouvre() { if (stream) return; stream = await demander(); brancher(); },
       stop() { if (stream) rendre(stream); stream = null; try { ctx.close(); } catch (e) { /* déjà fermé */ } },
@@ -144,10 +149,14 @@ async function ouvrirSon(micro = true) {
   try { if (navigator.audioSession) navigator.audioSession.type = micro ? 'play-and-record' : 'playback'; } catch (e) { /* réglage absent */ }
   nommer();
   if (!micro) { AU = { ctx, micro, got: true, sink: null, lag: null, mic: { info: null, ouvert: true, coupe() {}, async rouvre() {}, stop() { try { ctx.close(); } catch (e) { /* déjà fermé */ } } } }; return AU; }
-  const au = { ctx, micro, rs: new Resampler(ctx.sampleRate), sink: null, got: false, lag: null };
+  const au = { ctx, micro, rs: new Resampler(ctx.sampleRate), sink: null, got: false, lag: null, recu: 0, vu: 0 };
+  ctx.onstatechange = () => noter(`contexte audio ${ctx.state}`);
   try {
     au.mic = await openMic(ctx, (x, t) => {
       au.got = true;
+      const now = performance.now();
+      au.recu = now;
+      for (let i = 0; i < x.length; i += 8) if (x[i] > 1e-6 || x[i] < -1e-6) { au.vu = now; break; }
       // diagnostic : temps mis par un bloc de son pour aller du micro (horloge audio) jusqu'ici
       if (au.lag && t !== undefined && au.lag.length < 60000) au.lag.push(Math.max(0, ctx.currentTime - t));
       const y = au.rs.process(x);
@@ -527,7 +536,8 @@ function diagFile(s = S) {
   if (!s || !s.pcm) return null;
   const commun = { app: VERSION, exercice: s.exo, at: s.at, ua: navigator.userAgent,
     installee: (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true,
-    rate: s.rate, micro: AU ? AU.mic.info : null, tronque: s.pcmN >= DIAG_MAX, livraison: stats(AU && AU.lag) };
+    rate: s.rate, micro: AU ? AU.mic.info : null, tronque: s.pcmN >= DIAG_MAX, livraison: stats(AU && AU.lag),
+    mains: !!s.mains, journal: JOURNAL.slice(-200) };
   let meta;
   if (s.kind === 'enreg') {
     // par mot affiché : instant d'affichage (ms depuis le début du son), mot
@@ -535,6 +545,8 @@ function diagFile(s = S) {
   } else if (s.kind === 'noms') {
     // par énoncé entendu : instant (ms), nom le plus proche, distance, 1 s'il a été retenu
     meta = { ...commun, seuil: s.seuil, exemples: s.voix.ex.length, entendu: s.entendu };
+  } else if (s.kind === 'reco' || s.kind === 'menuML') {
+    meta = { ...commun, reglages: s.r || null, reponses: (s.v || []).map((q) => [q.v, q.rep, Math.round((q.time || 0) * 1000)]) };
   } else if (s.kind === 'chant') {
     meta = { ...commun, tol: TOL, tenue: s.hold.holdMs, reglages: s.r,
       // par exercice chanté : ce qui était demandé, temps (ms), écart médian de chaque note (cents), réécoutes
@@ -634,7 +646,7 @@ async function startChant(exo, mains = false) {
   const at = new Date().toISOString(), pitch = new Pitch({ win: 1024 });
   const s = { kind: 'chant', exo, input: 'chant', r: JSON.parse(JSON.stringify(prefs[exo])), banc, pitch, hold: new Hold({ tol: TOL, holdMs: tenue() }),
     forced: params.get(IMPOSE[exo]) ? params.get(IMPOSE[exo]).split(',') : null, it: null, j: 0, n: 0, track: [], results: [], replays: 0, reprises: 0, aides: 0, fauxJ: -1, courbe: prefs.courbe, phase: 'ecoute', part: 0,
-    level: 0, rate: au.ctx.sampleRate, pcm: [], pcmN: 0, over: false, pause: false, at, id: nouvelId(at) };
+    level: 0, rate: au.ctx.sampleRate, pcm: [], pcmN: 0, over: false, pause: false, at, id: nouvelId(at), listenFrom: Infinity };
   pitch.onPitch = (q) => onPitch(s, q);
   au.lag = DEBUG ? [] : null;
   if (mains) { s.mains = true; s.input = 'mains'; await preparerVoix(s, ['commandes']); s.ecoute = new Ecoute(); s.ecoute.onEnonce = (u) => entendre(s, u); }
@@ -642,7 +654,7 @@ async function startChant(exo, mains = false) {
   au.sink = (y) => { if (s.over) return; const z = DEBUG ? garder(s, y) : y; pitch.push(z); if (s.ecoute) s.ecoute.push(z); };
   $('systems').className = 'chant';
   chantLoop();
-  if (mains) { dire(`Chant, ${exo}.`).then(() => { if (S === s && !s.over) suivant(); }); return; }
+  if (mains) { direPuis(s, `Chant ${DE[exo]}.`).then((ok) => { if (ok) suivant(); }); return; }
   suivant();
 }
 
@@ -673,10 +685,11 @@ function suivant() {
   if (!s.mains) { playRef(); return; }
   // mains libres : l'app dit l'exercice, puis la note de départ sonne
   s.phase = 'ecoute'; s.listenFrom = Infinity; renderChant();
-  dire(texteChant(s.exo, it)).then(() => { if (S === s && !s.over && s.it === it) playRef(); });
+  direPuis(s, texteChant(s.exo, it)).then((ok) => { if (ok && s.it === it) playRef(); });
 }
 function playRef() {
   const s = S;
+  if (AU.ctx.state !== 'running') AU.ctx.resume().catch(() => {});
   couper(AU.ctx);
   jouer(AU.ctx, s.banc, s.it.ref, REF_MS / 1000);
   if (s.mains) bloquer(REF_MS);
@@ -713,7 +726,7 @@ function aide(mode) {
 function onPitch(sess, q) {
   if (sess !== S || S.over) return;
   S.level = q.rms;
-  if (S.pause || S.muet) return;
+  if (S.pause || S.muet || !S.it) return;                  // mains libres : l'app annonce encore l'exercice
   const now = performance.now();
   if (S.phase === 'ecoute') {
     if (now < S.listenFrom) return;                      // le piano sonne : on n'écoute pas la voix
@@ -817,7 +830,7 @@ function chantLoop() {
 const NOMS = INTERVALLES.slice(1).map((q) => q.nom);
 // Vocabulaires dits à voix haute. mots = ce que l'écran d'enregistrement affiche, qu'on prononce ; classe(mot) = ce qui est appris.
 // Chaque vocabulaire peut avoir une voix livrée avec l'app (fichier `livre`, quand il existe) et ses séries enregistrées sur l'appareil.
-const COMMANDES = ['encore', 'suivant', 'réponse', 'stop', 'écoute', 'chant', 'intervalles', 'accords', 'gammes'];
+const COMMANDES = ['encore', 'suivant', 'réponse', 'stop', 'chant', 'reconnaissance', 'intervalles', 'accords', 'gammes'];
 const VOCABS = {
   noms: { titre: 'les noms d\'intervalles', mots: NOMS, classe: (m) => NOMS.indexOf(m), cle: 'solfege.noms', livre: 'noms.json' },
   commandes: { titre: 'les commandes', mots: COMMANDES, classe: (m) => (COMMANDES.includes(m) ? m : -1), cle: 'solfege.voix.commandes', livre: null },
@@ -961,9 +974,10 @@ async function startReco(exo, mains = false) {
   if (mains) {
     await preparerVoix(s, ['commandes', VOC_RECO[exo]]);
     s.ecoute = new Ecoute(); s.ecoute.onEnonce = (u) => entendre(s, u);
-    au.sink = (y) => { if (s.over) return; s.ecoute.push(y); s.level = s.ecoute.niveau; };
+    Object.assign(s, { pcm: [], pcmN: 0, rate: au.ctx.sampleRate });
+    au.sink = (y) => { if (s.over) return; s.ecoute.push(DEBUG ? garder(s, y) : y); s.level = s.ecoute.niveau; };
     S = s;
-    dire(`Écoute, ${{ rIntervalles: 'intervalles', rAccords: 'accords', rGammes: 'gammes' }[exo]}.`).then(() => { if (S === s && !s.over) suivantReco(); });
+    direPuis(s, `Reconnaissance ${DE[{ rIntervalles: 'intervalles', rAccords: 'accords', rGammes: 'gammes' }[exo]]}.`).then((ok) => { if (ok) suivantReco(); });
     return;
   }
   S = s;
@@ -1092,7 +1106,8 @@ function renderEnreg() {
 // gammes). L'app dit l'exercice (voix du téléphone), on répond à voix haute, un son dit juste ou faux. Commandes : « encore »
 // (réécouter), « suivant », « réponse », « stop » (changer d'exercice, puis finir). Le micro ignore ce que joue ou dit l'app.
 const VOC_RECO = { rIntervalles: 'noms', rAccords: 'accords', rGammes: 'gammes' };
-const ML_EXOS = [['Écoute', [['rIntervalles', 'Intervalles'], ['rAccords', 'Accords'], ['rGammes', 'Gammes']]], ['Chant', [['intervalles', 'Intervalles'], ['accords', 'Accords'], ['gammes', 'Gammes']]]];
+const ML_EXOS = [['Chant', [['intervalles', 'Intervalles'], ['accords', 'Accords'], ['gammes', 'Gammes']]], ['Reconnaissance', [['rIntervalles', 'Intervalles'], ['rAccords', 'Accords'], ['rGammes', 'Gammes']]]];
+const DE = { intervalles: 'd\'intervalles', accords: 'd\'accords', gammes: 'de gammes' };
 let bloques = [], parle = false;
 // Fenêtre où le micro est ignoré : piano, voix de l'app, sons (plus 0,3 s d'écho).
 function bloquer(ms) { const t = performance.now(); bloques = bloques.filter(([, b]) => b > t - 15000); bloques.push([t, t + ms + 300]); }
@@ -1114,6 +1129,80 @@ function dire(texte) {
     parle = true; speechSynthesis.cancel(); speechSynthesis.speak(u);
   });
 }
+// ---------- son gardé vivant en mains libres ----------
+// Sur iPhone, la voix de l'app peut interrompre le son de la page : le piano se tait et le micro ne rend plus rien. Après
+// chaque énoncé, puis toutes les secondes, l'app vérifie que le son tourne et que le micro rend quelque chose ; sinon elle
+// relance le son et reprend le micro. Un toucher sur l'écran fait de même. Le journal (fichier de diagnostic) garde tout.
+const JOURNAL = [];
+function noter(m) {
+  JOURNAL.push([Math.round(performance.now()), m]);
+  if (JOURNAL.length > 300) JOURNAL.shift();
+  if (DEBUG && $('debug')) $('debug').textContent = `v${VERSION} · ${m}`;
+}
+const attendre = (ms) => new Promise((r) => setTimeout(r, ms));
+// 'ok', ou ce qui empêche le micro de rendre du son. Un son exactement nul pendant `nulMs` compte aussi.
+function etatMicro(nulMs = 4000) {
+  if (!AU || !AU.micro || AU.ctx.state === 'closed') return 'ok';
+  if (AU.ctx.state !== 'running') return `son de la page ${AU.ctx.state}`;
+  if (!AU.mic.ouvert) return 'ok';                        // rendu exprès (micro coupé, réglages)
+  const tr = AU.mic.piste, now = performance.now();
+  if (!tr || tr.readyState === 'ended') return 'piste du micro finie';
+  if (tr.muted) return 'piste du micro muette';
+  if (now - AU.recu > 1200) return 'plus de son reçu';
+  if (now - AU.vu > nulMs) return 'son nul';
+  return 'ok';
+}
+let remise = null;
+function remettreSon(pourquoi) {
+  if (remise) return remise;
+  remise = (async () => {
+    if (!AU || !AU.micro || AU.ctx.state === 'closed') return;
+    const au = AU;
+    noter(`remise : ${pourquoi}`);
+    if (au.ctx.state !== 'running') { await Promise.race([au.ctx.resume().catch(() => {}), attendre(800)]); await attendre(300); }
+    if (AU !== au || (S && S.muet) || !au.mic.ouvert) return;
+    const e = etatMicro(4000);
+    if (e === 'ok') { noter('son repris'); return; }
+    noter(`micro repris (${e})`);
+    try { au.mic.coupe(); await au.mic.rouvre(); } catch (err) { noter(`micro refusé : ${err && err.name}`); return; }
+    await attendre(500);
+    noter(`après reprise : ${etatMicro(1e9)}`);
+  })().finally(() => { remise = null; });
+  return remise;
+}
+// Après un énoncé : la sortie revient au son de la page (écouteurs Bluetooth), puis on vérifie que tout tourne.
+async function apresVoix(s) {
+  if (!AU || !AU.micro || S !== s || s.over) return;
+  const t = performance.now();
+  await attendre(200);
+  const e = etatMicro(1e9);
+  if (e !== 'ok' || !(AU.recu > t)) await remettreSon(`après la voix (${e !== 'ok' ? e : 'plus de son reçu'})`);
+}
+async function direPuis(s, texte) {
+  await dire(texte);
+  if (S !== s || s.over) return false;
+  await apresVoix(s);
+  return S === s && !s.over;
+}
+// Veille, toutes les secondes, pendant un exercice mains libres. Trois remises sans effet : l'écran demande un toucher.
+setInterval(() => {
+  const s = S;
+  if (!s || !s.mains || s.over || s.pause || s.muet || parle || remise || document.hidden || !AU || !AU.micro) return;
+  const e = etatMicro(4000);
+  if (e === 'ok') {
+    s.pannes = 0;
+    if (s.alerte) { s.alerte = false; $('result').textContent = ''; delete $('result').dataset.alerte; }
+    return;
+  }
+  const now = performance.now();
+  if (now - (s.remiseT || 0) < 6000) return;
+  s.remiseT = now; s.pannes = (s.pannes || 0) + 1;
+  if (s.pannes > 3) {
+    if (!s.alerte) { s.alerte = true; $('result').textContent = 'Le micro ne répond pas. Touche l\'écran.'; $('result').dataset.alerte = '1'; noter(`micro sans réponse (${e})`); }
+    return;
+  }
+  remettreSon(`veille (${e})`);
+}, 1000);
 // Sons : juste (deux notes qui montent), faux (deux notes graves qui descendent), note tenue (petit déclic).
 function bip(type) {
   if (!AU || AU.ctx.state === 'closed') return;
@@ -1200,8 +1289,7 @@ async function donnerReponse(s) {
   clearTimeout(s.relance);
   if (s.premier === null) { s.premier = false; s.v.push({ v: 'faux', rep: 'réponse', st: s.it.st, quoi: s.it.quoi, ecoutes: s.ecoutes || 0, time: (performance.now() - s.t0) / 1000 }); }
   s.etat = 'ok'; s.bon = s.exo === 'rIntervalles' ? String(s.it.st) : s.it.id; render(); ligne();
-  await dire(reponseDite(s));
-  if (S !== s || s.over) return;
+  if (!(await direPuis(s, reponseDite(s)))) return;
   const ms = await jouerReco(s.it.jeu === 'harm' ? 'mel' : undefined);
   s.nextT = setTimeout(() => { if (S === s && !s.over) suivantReco(); }, (ms || 1500) + 700);
 }
@@ -1236,15 +1324,16 @@ function renderML() {
   for (const [titre, liste] of ML_EXOS) {
     h += `<p class="rubrique">${titre}</p><div class="exos">${liste.map(([exo, t]) => `<button type="button" data-ml="${exo}"${ok(exo) ? '' : ` class="manque" aria-label="${t} : voix à enregistrer"`}>${t}</button>`).join('')}</div>`;
   }
-  h += `<p class="rubrique">Ma voix</p><div class="exos">${[['commandes', 'Commandes'], ['accords', 'Accords'], ['gammes', 'Gammes']].map(([v, t]) => `<button type="button" data-voc="${v}" class="${p[v] ? 'fait' : 'manque'}">${t}</button>`).join('')}</div></div>`;
-  h += `<p class="consigne">${p.commandes ? 'Touche un exercice, puis tout passe par la voix. « Stop » pour changer d\'exercice.' : 'Touche un exercice, puis tout passe par la voix. Pour les commandes (« encore », « suivant », « réponse », « stop »), enregistre d\'abord ta voix.'}</p>`;
+  h += `<p class="rubrique">Enregistrer ma voix</p><div class="exos">${[['commandes', 'Commandes'], ['accords', 'Accords'], ['gammes', 'Gammes']].map(([v, t]) => `<button type="button" data-voc="${v}" class="${p[v] ? 'fait' : 'manque'}">${t}</button>`).join('')}</div></div>`;
+  const gris = ML_EXOS.some(([, l]) => l.some(([exo]) => !ok(exo)));
+  h += `<p class="consigne">Touche un exercice, puis tout passe par la voix.${gris ? ' En gris : ta voix est à enregistrer d\'abord (une série de trois minutes).' : ''} ${p.commandes ? '« Stop » pour changer d\'exercice.' : 'Pour dire « encore », « suivant », « réponse » ou « stop », enregistre les commandes.'}</p>`;
   $('systems').style.gap = '18px'; $('systems').innerHTML = h;
 }
-// Choix de l'exercice à la voix : « écoute » ou « chant », puis « intervalles », « accords » ou « gammes ».
+// Choix de l'exercice à la voix : « chant » ou « reconnaissance », puis « intervalles », « accords » ou « gammes ».
 async function startMenuML() {
   const au = await ouvrirSon(true);
   const s = { kind: 'menuML', exo: 'menuML', input: 'voix', mains: true, niveau: 1, famille: null, level: 0, over: false, pause: false, ecoute: new Ecoute() };
-  await preparerVoix(s, ['commandes', 'accords', 'gammes']);
+  await preparerVoix(s, ['commandes', 'noms', 'accords', 'gammes']);   // noms : voix livrée avec l'app
   s.ecoute.onEnonce = (u) => entendre(s, u);
   au.sink = (y) => { if (s.over) return; s.ecoute.push(y); s.level = s.ecoute.niveau; };
   S = s;
@@ -1253,18 +1342,18 @@ async function startMenuML() {
 }
 function questionMenu(s) {
   render();
-  dire(s.niveau === 1 ? 'Écoute ou chant ?' : 'Intervalles, accords ou gammes ?');
+  direPuis(s, s.niveau === 1 ? 'Chant ou reconnaissance ?' : 'Intervalles, accords ou gammes ?');
   clearTimeout(s.relance);
   s.relance = setTimeout(() => { if (S === s && !s.over) questionMenu(s); }, 15000);
 }
 function entendreMenu(s, u) {
   if (u.t1 - u.t0 > 2) return;
-  const admis = s.niveau === 1 ? ['écoute', 'chant', 'stop'] : ['intervalles', 'accords', 'gammes', 'stop'];
+  const admis = s.niveau === 1 ? ['chant', 'reconnaissance', 'écoute', 'stop'] : ['intervalles', 'accords', 'gammes', 'stop'];   // « écoute » : séries d'avant
   const r = classerML(s, u, { commandes: (c) => admis.includes(c) });
   if (!r) return;
   if (r.cls === 'stop') { clearTimeout(s.relance); dire('Fin du mode mains libres.').then(() => { if (S === s) lancer('ml'); }); return; }
   if (s.niveau === 1) { s.famille = r.cls; s.niveau = 2; questionMenu(s); return; }
-  const exo = s.famille === 'écoute' ? { intervalles: 'rIntervalles', accords: 'rAccords', gammes: 'rGammes' }[r.cls] : r.cls;
+  const exo = s.famille !== 'chant' ? { intervalles: 'rIntervalles', accords: 'rAccords', gammes: 'rGammes' }[r.cls] : r.cls;
   if (VOC_RECO[exo] && !s.vocs[VOC_RECO[exo]]) { dire(`Il faut d'abord enregistrer ta voix pour les ${r.cls}.`); return; }
   clearTimeout(s.relance);
   lancer(exo, { mains: true });
@@ -1272,7 +1361,7 @@ function entendreMenu(s, u) {
 // Tests : un mot reconnu, sans passer par le micro.
 function entendreMenuTest(s, cls) { const garde = classerML; classerML = () => ({ id: 'commandes', cls, dist: 0 }); try { entendreMenu(s, { t0: 0, t1: 0.5, c: [] }); } finally { classerML = garde; } }
 function renderMenuML() {
-  const q = S.niveau === 1 ? 'Écoute ou chant ?' : 'Intervalles, accords ou gammes ?';
+  const q = S.niveau === 1 ? 'Chant ou reconnaissance ?' : 'Intervalles, accords ou gammes ?';
   $('systems').style.gap = '18px';
   $('systems').innerHTML = `<div class="ml">${ICONE.ecouteurs(56)}</div><p class="mot">${q}</p><p class="consigne">« Stop » pour finir.</p>`;
 }
@@ -1481,6 +1570,7 @@ $('systems').addEventListener('click', (e) => {
 });
 $('page').addEventListener('click', () => {
   if (AU && AU.ctx.state !== 'running') AU.ctx.resume().catch(() => {});
+  if (S && S.mains && !S.muet && etatMicro(4000) !== 'ok') { S.pannes = 0; remettreSon('toucher'); }
   ligne();
 });
 $('import').addEventListener('change', async (e) => {
@@ -1503,4 +1593,4 @@ document.addEventListener('visibilitychange', () => {
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
 // ?mains-libres (deuxième icône, raccourci) : on arrive sur l'écran Mains libres
 if (params.has('mains-libres')) lancer('ml');
-window.__solfege = { VERSION, prefs, sonListe, get session() { return S; }, entendu: (id, cls) => { const s = S; if (!s) return; if (id === 'commandes') { if (s.kind === 'menuML') entendreMenuTest(s, cls); else commande(s, cls); } else if (s.kind === 'reco') repondre(id === 'noms' ? String(cls + 1) : cls); }, get son() { return AU; }, verdicts, onMidiNote, diagFile, get gateOff() { return gateOff; } };
+window.__solfege = { VERSION, prefs, sonListe, journal: JOURNAL, get session() { return S; }, entendu: (id, cls) => { const s = S; if (!s) return; if (id === 'commandes') { if (s.kind === 'menuML') entendreMenuTest(s, cls); else commande(s, cls); } else if (s.kind === 'reco') repondre(id === 'noms' ? String(cls + 1) : cls); }, get son() { return AU; }, verdicts, onMidiNote, diagFile, get gateOff() { return gateOff; } };
