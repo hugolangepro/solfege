@@ -18,23 +18,26 @@ export const sensDe = (st, sens) => (sens > 0 ? 'montant' : 'descendant') + (INT
 
 // Accords : demi-tons au-dessus de la fondamentale, et suffixe du chiffrage dans l'écriture du jazz : – pour mineur,
 // ∆ pour la septième majeure. mineur = la fondamentale s'écrit comme dans une tonalité mineure. Une seule liste pour tous
-// les exercices. nom = ce qu'on lit sur un bouton de réponse quand le signe seul ne dit rien (sinon le signe).
+// les exercices. dit = ce qu'on prononce pour répondre (et que l'écran d'enregistrement affiche) ; parle = ce que dit la voix de l'app.
 export const ACCORDS = [
-  { id: 'maj', tons: [0, 4, 7], signe: '', nom: 'majeur' },
-  { id: 'min', tons: [0, 3, 7], signe: '–', nom: 'mineur', mineur: true },
-  { id: 'aug', tons: [0, 4, 8], signe: '+', nom: 'augmenté' },
-  { id: 'dim', tons: [0, 3, 6], signe: '°', nom: 'diminué (triade)', mineur: true },
-  { id: 'sus4', tons: [0, 5, 7], signe: 'sus4' },
-  { id: 'm7', tons: [0, 3, 7, 10], signe: '–7', mineur: true },
-  { id: 'maj7', tons: [0, 4, 7, 11], signe: '∆7' },
-  { id: '7', tons: [0, 4, 7, 10], signe: '7' },
-  { id: 'mMaj7', tons: [0, 3, 7, 11], signe: '–∆7', mineur: true },
-  { id: '6', tons: [0, 4, 7, 9], signe: '6' },
+  { id: 'maj', tons: [0, 4, 7], signe: '', nom: 'majeur', dit: 'majeur', parle: 'majeur' },
+  { id: 'min', tons: [0, 3, 7], signe: '–', nom: 'mineur', dit: 'mineur', parle: 'mineur', mineur: true },
+  { id: 'aug', tons: [0, 4, 8], signe: '+', nom: 'augmenté', dit: 'augmenté', parle: 'augmenté' },
+  { id: 'dim', tons: [0, 3, 6], signe: '°', nom: 'diminué (triade)', dit: 'triade diminuée', parle: 'triade diminuée', mineur: true },
+  { id: 'sus4', tons: [0, 5, 7], signe: 'sus4', dit: 'sus 4', parle: 'sus quatre' },
+  { id: 'm7', tons: [0, 3, 7, 10], signe: '–7', dit: 'mineur 7', parle: 'mineur sept', mineur: true },
+  { id: 'maj7', tons: [0, 4, 7, 11], signe: '∆7', dit: 'maj 7', parle: 'majeur sept' },
+  { id: '7', tons: [0, 4, 7, 10], signe: '7', dit: '7', parle: 'sept' },
+  { id: 'mMaj7', tons: [0, 3, 7, 11], signe: '–∆7', dit: 'mineur maj 7', parle: 'mineur majeur sept', mineur: true },
+  { id: '6', tons: [0, 4, 7, 9], signe: '6', dit: '6', parle: 'six' },
   // semi-diminué = mineur 7 bémol 5 ; diminué = septième diminuée, la ♭♭7 sonnant comme une 6 (d'où « mineur 6 bémol 5 »)
-  { id: 'm7b5', tons: [0, 3, 6, 10], signe: 'ø7', nom: 'semi-diminué', mineur: true },
-  { id: 'dim7', tons: [0, 3, 6, 9], signe: '°7', nom: 'diminué', mineur: true }];
+  { id: 'm7b5', tons: [0, 3, 6, 10], signe: 'ø7', nom: 'semi-diminué', dit: 'semi-diminué', parle: 'semi-diminué', mineur: true },
+  { id: 'dim7', tons: [0, 3, 6, 9], signe: '°7', nom: 'diminué', dit: 'diminué', parle: 'diminué', mineur: true }];
 const RACINES = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'G♭', 'G', 'A♭', 'A', 'B♭', 'B'];
 const RACINES_MIN = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
+// Fondamentale prononcée : do, ré bémol, fa dièse…
+const SOLFEGE = { C: 'do', D: 'ré', E: 'mi', F: 'fa', G: 'sol', A: 'la', B: 'si' };
+export const racineParlee = (nom) => SOLFEGE[nom[0]] + (nom[1] === '♭' ? ' bémol' : nom[1] === '♯' ? ' dièse' : '');
 export const racineNom = (racine, id) => (ACCORDS.find((q) => q.id === id).mineur || id === '7' && racine === 6 ? RACINES_MIN : RACINES)[racine];
 export function chiffrage(racine, id, nom = racineNom(racine, id)) {
   return nom + ACCORDS.find((q) => q.id === id).signe;
@@ -43,13 +46,14 @@ export function chiffrage(racine, id, nom = racineNom(racine, id)) {
 // Gammes et modes : demi-tons au-dessus de la tonique. Une seule liste pour tous les exercices : une gamme ajoutée ici
 // apparaît dans les réglages de chacun. Deux noms peuvent désigner les mêmes notes (majeure et ionien). À l'écran : `court`,
 // ou le nom du mode, déjà court.
+export const gammeDit = (id) => { const g = GAMMES.find((q) => q.id === id); return g.dit || g.nom; };
 export const gammeCourt = (id) => { const g = GAMMES.find((q) => q.id === id); return g.court || g.nom; };
 export const GAMMES = [
-  { id: 'majeure', nom: 'majeure', court: 'maj', tons: [0, 2, 4, 5, 7, 9, 11] },
-  { id: 'mineure', nom: 'mineure', court: 'min', tons: [0, 2, 3, 5, 7, 8, 10] },
-  { id: 'harmonique', nom: 'mineure harmonique', court: 'min harm', tons: [0, 2, 3, 5, 7, 8, 11] },
-  { id: 'pentaMaj', nom: 'pentatonique majeure', court: 'penta maj', tons: [0, 2, 4, 7, 9] },
-  { id: 'pentaMin', nom: 'pentatonique mineure', court: 'penta min', tons: [0, 3, 5, 7, 10] },
+  { id: 'majeure', nom: 'majeure', court: 'maj', dit: 'majeure', tons: [0, 2, 4, 5, 7, 9, 11] },
+  { id: 'mineure', nom: 'mineure', court: 'min', dit: 'mineure', tons: [0, 2, 3, 5, 7, 8, 10] },
+  { id: 'harmonique', nom: 'mineure harmonique', court: 'min harm', dit: 'mineure harmonique', tons: [0, 2, 3, 5, 7, 8, 11] },
+  { id: 'pentaMaj', nom: 'pentatonique majeure', court: 'penta maj', dit: 'penta majeure', tons: [0, 2, 4, 7, 9] },
+  { id: 'pentaMin', nom: 'pentatonique mineure', court: 'penta min', dit: 'penta mineure', tons: [0, 3, 5, 7, 10] },
   { id: 'ionien', nom: 'ionien', tons: [0, 2, 4, 5, 7, 9, 11], mode: true },
   { id: 'dorien', nom: 'dorien', tons: [0, 2, 3, 5, 7, 9, 10], mode: true },
   { id: 'phrygien', nom: 'phrygien', tons: [0, 1, 3, 5, 7, 8, 10], mode: true },

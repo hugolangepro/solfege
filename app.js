@@ -1,12 +1,12 @@
 // Solfège : lecture de notes et chant, sans fin. Interface minimale.
 import { loadModel, Recognizer, Resampler, Suivi, SYLLABES } from './engine.js';
 import { Pitch } from './pitch.js';
-import { INTERVALLES, ACCORDS, GAMMES, gammeCourt, memesNotes, sensDe, chiffrage, racineNom, tirerIntervalle, tirerPortee, tirerAccord, tirerGamme, midiOf, Hold } from './chant.js';
+import { INTERVALLES, ACCORDS, GAMMES, gammeCourt, gammeDit, memesNotes, sensDe, chiffrage, racineNom, racineParlee, tirerIntervalle, tirerPortee, tirerAccord, tirerGamme, midiOf, Hold } from './chant.js';
 import { chargerPiano, jouer, couper } from './piano.js';
 import { Ecoute, Voix, traits, apprendre, emballer, deballer } from './noms.js';
 import { PER, P_MIN, P_MAX, CLEFS, INK, DONE, RED, GREEN, BLUE, SOFT, LINE, r2, noteInfo, metrics, systemSVG, miniPortee, porteeChant } from './portee.js';
 
-const VERSION = '2026-11-28.1';
+const VERSION = '2026-11-28.2';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
@@ -65,6 +65,7 @@ const ICONE = {
   ensemble: (t) => svg(tete(10.5, 18) + tete(10.5, 13.5) + tete(10.5, 9) + '<path d="M13 18V3.5"/>', t),
   suite: (t) => svg(tete(5, 18) + tete(12, 13) + tete(19, 8), t),
   suivant: (t) => svg('<path d="M5 12h14M13.5 6.5 19 12l-5.5 5.5"/>', t),
+  ecouteurs: (t) => svg('<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3.5" y="14" width="4" height="6.5" rx="1.6"/><rect x="16.5" y="14" width="4" height="6.5" rx="1.6"/>', t),
 };
 
 // ---------- état ----------
@@ -176,24 +177,26 @@ function garder(s, y) {
 }
 
 // ---------- démarrage et arrêt d'un exercice ----------
-async function lancer(exo) {
+async function lancer(exo, opts = {}) {
   if (occupe) return;
   occupe = true; say('');
   try {
     arreter();
-    prefs.exo = exo === 'enreg' ? 'noms' : exo; savePrefs();
+    if (!['enreg', 'ml', 'menuML'].includes(exo)) { prefs.exo = exo; savePrefs(); }
     if (exo === 'notes') await startNotes();
     else if (exo === 'noms') await startNoms();
-    else if (exo === 'enreg') await startEnreg();
-    else if (exo[0] === 'r') await startReco(exo);
-    else await startChant(exo);
+    else if (exo === 'enreg') await startEnreg(opts.vocab || 'noms');
+    else if (exo === 'ml') await startMainsLibres();
+    else if (exo === 'menuML') await startMenuML();
+    else if (exo[0] === 'r') await startReco(exo, !!opts.mains);
+    else await startChant(exo, !!opts.mains);
     $('result').textContent = ''; delete $('result').dataset.alerte;
     $('debug').hidden = !DEBUG; $('debug').textContent = '';
-    $('regler').hidden = S.kind === 'enreg'; $('aides').hidden = S.kind !== 'chant';
+    $('regler').hidden = ['enreg', 'ml', 'menuML'].includes(S.kind); $('aides').hidden = S.kind !== 'chant';
     const pl = $('aides').querySelector('[data-h="plaque"]'), ar = $('aides').querySelector('[data-h="arpege"]');
     pl.hidden = S.exo === 'gammes'; pl.innerHTML = ICONE.ensemble();
     ar.innerHTML = S.exo === 'gammes' ? ICONE.ecouter() : ICONE.suite(); ar.setAttribute('aria-label', S.exo === 'gammes' ? 'Écouter la gamme' : 'Les notes l\'une après l\'autre');
-    $('mic').hidden = S.input === 'midi' || S.input === 'toucher'; $('mic').disabled = S.kind === 'enreg'; $('mic').setAttribute('aria-pressed', 'false'); $('mic').setAttribute('aria-label', 'Couper le micro');
+    $('mic').hidden = S.input === 'midi' || S.input === 'toucher' || S.kind === 'ml'; $('mic').disabled = S.kind === 'enreg'; $('mic').setAttribute('aria-pressed', 'false'); $('mic').setAttribute('aria-label', 'Couper le micro');
     show('page'); render(); ligne(); levelLoop();
     if (navigator.wakeLock && !verrou) navigator.wakeLock.request('screen').then((l) => { verrou = l; }).catch(() => {});
     if (S && S.input !== 'midi' && S.input !== 'toucher') {
@@ -216,7 +219,8 @@ let verrou = null;
 function arreter() {
   if (!S) return;
   const s = S;
-  s.over = true; clearTimeout(s.commitT); clearTimeout(s.nextT); clearTimeout(s.promptT);
+  s.over = true; clearTimeout(s.commitT); clearTimeout(s.nextT); clearTimeout(s.promptT); clearTimeout(s.relance);
+  if (s.mains) taire();
   if (AU) { AU.sink = null; couper(AU.ctx); }
   sauver(s);
   S = null;
@@ -301,6 +305,8 @@ function render() {
   if (S.kind === 'chant') { renderChant(); return; }
   if (S.kind === 'enreg') { renderEnreg(); return; }
   if (S.kind === 'noms') { renderNoms(); return; }
+  if (S.kind === 'ml') { renderML(); return; }
+  if (S.kind === 'menuML') { renderMenuML(); return; }
   if (S.kind === 'reco') { renderReco(); return; }
   const t0 = performance.now();
   const { W, s, gap, nSys } = layout(), voix = S.input === 'voix';
@@ -480,7 +486,7 @@ function sauver(s) {
   } else if (s.kind === 'reco' && s.v.length) {
     // Une écoute = [ce qui a sonné, 1 si la première réponse est juste, réponse, instant (ms), réécoutes]
     const m = mesure(s.v);
-    saveSession({ id: s.id, fmt: 2, app: VERSION, at: s.at, mode: s.exo, input: 'toucher', n: s.v.length, ok: m.ok, faux: m.faux, rate: m.rate, acc: m.acc,
+    saveSession({ id: s.id, fmt: 2, app: VERSION, at: s.at, mode: s.exo, input: s.input, n: s.v.length, ok: m.ok, faux: m.faux, rate: m.rate, acc: m.acc,
       items: s.v.slice(-500).map((q) => [q.quoi, q.v === 'ok' ? 1 : 0, q.rep, Math.round(q.time * 1000), q.ecoutes]) });
   } else if (s.kind === 'noms' && s.v.length) {
     // Un intervalle lu = [demi-tons, 1 si la première réponse est juste, réponse en demi-tons, instant (ms)]
@@ -512,8 +518,8 @@ function diagFile() {
     rate: S.rate, micro: AU ? AU.mic.info : null, tronque: S.pcmN >= DIAG_MAX, livraison: stats(AU && AU.lag) };
   let meta;
   if (S.kind === 'enreg') {
-    // par nom affiché : instant d'affichage (ms depuis le début du son), nom
-    meta = { ...commun, periode: PROMPT_MS, phrases: S.journal };
+    // par mot affiché : instant d'affichage (ms depuis le début du son), mot
+    meta = { ...commun, vocabulaire: S.vocab, periode: PROMPT_MS, phrases: S.journal };
   } else if (S.kind === 'noms') {
     // par énoncé entendu : instant (ms), nom le plus proche, distance, 1 s'il a été retenu
     meta = { ...commun, seuil: S.seuil, exemples: S.voix.ex.length, entendu: S.entendu };
@@ -559,7 +565,7 @@ async function shareAudio() {
 // Trois temps, sans chronomètre. Écoute : la note de départ sonne au piano (toucher l'exercice la rejoue). Vise : tu cherches
 // la note, la courbe bleue montre ta voix autour d'elle, rien n'est jugé faux. Tiens : la note compte après la tenue réglée
 // dans la bande de ±TOL cents, à l'octave près. Puis la note suivante, puis l'exercice suivant, sans fin.
-async function startChant(exo) {
+async function startChant(exo, mains = false) {
   const au = await ouvrirSon(), banc = await chargerPiano(au.ctx);
   const at = new Date().toISOString(), pitch = new Pitch({ win: 1024 });
   const s = { kind: 'chant', exo, input: 'chant', r: JSON.parse(JSON.stringify(prefs[exo])), banc, pitch, hold: new Hold({ tol: TOL, holdMs: tenue() }),
@@ -567,10 +573,13 @@ async function startChant(exo) {
     level: 0, rate: au.ctx.sampleRate, pcm: [], pcmN: 0, over: false, pause: false, at, id: nouvelId(at) };
   pitch.onPitch = (q) => onPitch(s, q);
   au.lag = DEBUG ? [] : null;
+  if (mains) { s.mains = true; s.input = 'mains'; await preparerVoix(s, ['commandes']); s.ecoute = new Ecoute(); s.ecoute.onEnonce = (u) => entendre(s, u); }
   S = s;
-  au.sink = (y) => { if (!s.over) pitch.push(DEBUG ? garder(s, y) : y); };
+  au.sink = (y) => { if (s.over) return; const z = DEBUG ? garder(s, y) : y; pitch.push(z); if (s.ecoute) s.ecoute.push(z); };
   $('systems').className = 'chant';
-  suivant(); chantLoop();
+  chantLoop();
+  if (mains) { dire(`Chant, ${exo}.`).then(() => { if (S === s && !s.over) suivant(); }); return; }
+  suivant();
 }
 
 // Tire l'exercice suivant. Pour les tests, l'adresse impose les premiers : ?iv=départ:cible (numéros MIDI) pour un intervalle,
@@ -597,12 +606,16 @@ function suivant() {
     it = { ...q, cibles: q.tons, titre: chiffrage(q.racine, q.id), quoi: [q.id, q.racine] };
   }
   s.it = it; s.j = 0; s.replays = 0; s.reprises = 0; s.aides = 0; s.fauxJ = -1; s.tVise = undefined; s.cents = [];
-  playRef();
+  if (!s.mains) { playRef(); return; }
+  // mains libres : l'app dit l'exercice, puis la note de départ sonne
+  s.phase = 'ecoute'; s.listenFrom = Infinity; renderChant();
+  dire(texteChant(s.exo, it)).then(() => { if (S === s && !s.over && s.it === it) playRef(); });
 }
 function playRef() {
   const s = S;
   couper(AU.ctx);
   jouer(AU.ctx, s.banc, s.it.ref, REF_MS / 1000);
+  if (s.mains) bloquer(REF_MS);
   s.phase = 'ecoute'; s.listenFrom = performance.now() + 30 + REF_MS + REF_TAIL_MS;
   s.hold.reset(); s.track = []; s.part = 0;
   renderChant();
@@ -613,7 +626,9 @@ function playRef() {
 function reprise() {
   const s = S;
   s.reprises += 1; s.fauxJ = s.j; s.j = 0; s.cents = [];
-  playRef();
+  if (!s.mains) { playRef(); return; }
+  bip('faux'); s.phase = 'ecoute'; s.listenFrom = Infinity; renderChant();
+  setTimeout(() => { if (S === s && !s.over) playRef(); }, 450);
 }
 // Aide : toutes les notes ensemble (plaqué) ou l'une après l'autre (arpégé), puis on reprend à la première.
 function aide(mode) {
@@ -624,6 +639,7 @@ function aide(mode) {
   couper(AU.ctx);                                        // un second appui remplace le premier, sans superposition
   notes.forEach((m, i) => jouer(AU.ctx, s.banc, m, dur, pas ? 0.9 : 0.9 / Math.sqrt(notes.length), i * pas));
   s.aides += 1; s.j = 0; s.cents = []; s.fauxJ = -1;
+  if (s.mains) bloquer(((notes.length - 1) * pas + dur) * 1000);
   s.phase = 'ecoute'; s.listenFrom = performance.now() + 30 + ((notes.length - 1) * pas + dur) * 1000 + REF_TAIL_MS;
   s.hold.reset(); s.track = []; s.part = 0;
   renderChant();
@@ -658,12 +674,13 @@ function onPitch(sess, q) {
   }
   S.cents.push(Math.round(r.median) || 0);
   S.j += 1; S.hold.reset(); S.track = []; S.part = 0; S.tNote = now;
-  if (S.j < S.it.cibles.length) { renderChant(); return; }
+  if (S.j < S.it.cibles.length) { if (S.mains) bip('note'); renderChant(); return; }
+  if (S.mains) bip('juste');
   S.n += 1;
   S.results.push({ quoi: S.it.quoi, ms: Math.round(now - S.tVise), cents: S.cents, replays: S.replays, reprises: S.reprises, aides: S.aides });
   S.phase = 'tenu'; renderChant(); ligne();
   if (S.n % 8 === 0) sauver(S);
-  S.nextT = setTimeout(() => { if (S === sess && !S.over && !S.pause) suivant(); }, S.reprises ? APRES_ERREUR_MS : ENCHAINE_MS);
+  S.nextT = setTimeout(() => { if (S === sess && !S.over && !S.pause) suivant(); }, S.reprises ? APRES_ERREUR_MS : S.mains ? 600 : ENCHAINE_MS);
 }
 
 // En haut : le nom de l'intervalle, le chiffrage de l'accord, ou la portée avec ses notes. Dessous, la courbe de la voix :
@@ -734,35 +751,45 @@ function chantLoop() {
 // ici (ou importée d'un fichier déjà enregistré) donne les exemples auxquels chaque nom dit est comparé. Les exemples
 // restent sur l'appareil (solfege.noms), quatre séries au plus.
 const NOMS = INTERVALLES.slice(1).map((q) => q.nom);
-function lireVoix() {
-  try { const v = JSON.parse(localStorage.getItem('solfege.noms') || 'null'); return v && v.v === 1 && v.series.length ? v : null; } catch (e) { return null; }
+// Vocabulaires dits à voix haute. mots = ce que l'écran d'enregistrement affiche, qu'on prononce ; classe(mot) = ce qui est appris.
+// Chaque vocabulaire peut avoir une voix livrée avec l'app (fichier `livre`, quand il existe) et ses séries enregistrées sur l'appareil.
+const COMMANDES = ['encore', 'suivant', 'réponse', 'stop', 'écoute', 'chant', 'intervalles', 'accords', 'gammes'];
+const VOCABS = {
+  noms: { titre: 'les noms d\'intervalles', mots: NOMS, classe: (m) => NOMS.indexOf(m), cle: 'solfege.noms', livre: 'noms.json' },
+  commandes: { titre: 'les commandes', mots: COMMANDES, classe: (m) => (COMMANDES.includes(m) ? m : -1), cle: 'solfege.voix.commandes', livre: null },
+  accords: { titre: 'les noms d\'accords', mots: ACCORDS.map((a) => a.dit), classe: (m) => (ACCORDS.find((a) => a.dit === m) || { id: -1 }).id, cle: 'solfege.voix.accords', livre: null },
+  gammes: { titre: 'les noms de gammes', mots: GAMMES.map((g) => g.dit || g.nom), classe: (m) => (GAMMES.find((g) => (g.dit || g.nom) === m) || { id: -1 }).id, cle: 'solfege.voix.gammes', livre: null },
+};
+function lireVoix(id = 'noms') {
+  try { const v = JSON.parse(localStorage.getItem(VOCABS[id].cle) || 'null'); return v && v.v === 1 && v.series.length ? v : null; } catch (e) { return null; }
 }
 // La voix de départ est livrée avec l'app (noms.json, fait par outils/noms_modele.mjs) ; les séries enregistrées sur
 // l'appareil s'y ajoutent. Un énoncé est retenu si son score ne dépasse pas 1,08 fois le plus grand score d'un nom retrouvé
 // à la vérification, et si le deuxième nom est au moins 3 % plus loin (sinon c'est trop incertain : on le redit).
-const nomsP = fetch('noms.json').then((r) => (r.ok ? r.json() : null)).catch(() => null);
+const livres = {};
+const livreDe = (id) => (livres[id] = livres[id] || (!VOCABS[id].livre ? Promise.resolve(null) : fetch(VOCABS[id].livre)).then((r) => (r.ok ? r.json() : null)).catch(() => null));
 const exemples = (g) => g.map(([cls, t]) => ({ cls, f: traits(deballer(t)) }));
-let voixCache = null;
-async function voixApprise() {
-  const livre = await nomsP, v = lireVoix();
+const voixCaches = {};
+async function voixApprise(id = 'noms') {
+  const livre = await livreDe(id), v = lireVoix(id);
   const g = [...(livre ? livre.g : []), ...(v ? v.series.flatMap((q) => q.g) : [])];
   if (!g.length) return null;
   const cle = (livre ? livre.fait : '') + (v ? v.series.map((q) => q.at).join() : '');
-  if (!voixCache || voixCache.cle !== cle) voixCache = { cle, voix: new Voix(exemples(g)), seuil: 1.08 * Math.max(livre ? livre.loin : 0, v ? v.loin : 0) };
-  return voixCache;
+  if (!voixCaches[id] || voixCaches[id].cle !== cle) voixCaches[id] = { cle, voix: new Voix(exemples(g)), seuil: 1.08 * Math.max(livre ? livre.loin : 0, v ? v.loin : 0) };
+  return voixCaches[id];
 }
-// Apprend une série (son à 16 kHz en blocs, journal [[ms, nom]]) et la vérifie : chaque exemple connu contre tous les autres.
-async function enroler(blocs, journal, periode, at) {
-  const ex = apprendre(blocs, journal.map(([ms, nom]) => [ms, NOMS.indexOf(nom)]), periode);
+// Apprend une série (son à 16 kHz en blocs, journal [[ms, mot]]) et la vérifie : chaque exemple connu contre tous les autres.
+async function enroler(blocs, journal, periode, at, id = 'noms') {
+  const V = VOCABS[id], ex = apprendre(blocs, journal.map(([ms, mot]) => [ms, V.classe(mot)]), periode);
   if (ex.length < 0.75 * journal.length) return { ok: false, n: ex.length, total: journal.length };
-  const v = lireVoix() || { v: 1, series: [] };
+  const v = lireVoix(id) || { v: 1, series: [] };
   v.series.push({ at, g: ex.map((e) => [e.cls, emballer(e.c)]) });
   v.series = v.series.slice(-4);
   // la nouvelle série est vérifiée contre tout le reste : voix livrée et séries déjà apprises
-  const livre = await nomsP, avant = [...(livre ? livre.g : []), ...v.series.slice(0, -1).flatMap((q) => q.g)];
+  const livre = await livreDe(id), avant = [...(livre ? livre.g : []), ...v.series.slice(0, -1).flatMap((q) => q.g)];
   const r = new Voix(exemples([...avant, ...v.series[v.series.length - 1].g])).verifier(avant.length);
   v.loin = Math.max(v.loin || 0, r.loin);
-  localStorage.setItem('solfege.noms', JSON.stringify(v));
+  localStorage.setItem(V.cle, JSON.stringify(v));
   return { ok: true, n: ex.length, total: journal.length, juste: r.ok, sur: r.n, series: v.series.length };
 }
 // Un enregistrement déjà partagé par l'app : WAV 16 kHz mono et son bloc « sLFG ».
@@ -776,7 +803,7 @@ function importer(buf) {
   if (!Array.isArray(meta.phrases) || b.getUint32(bl['fmt '][0] + 4, true) !== 16000) throw new Error('ce fichier ne vient pas de l\'écran d\'enregistrement');
   const n = bl.data[1] >> 1, x = new Float32Array(n);
   for (let i = 0; i < n; i++) x[i] = b.getInt16(bl.data[0] + 2 * i, true) / 32768;
-  return enroler([x], meta.phrases, meta.periode || PROMPT_MS, meta.at || new Date().toISOString());   // une promesse
+  return enroler([x], meta.phrases, meta.periode || PROMPT_MS, meta.at || new Date().toISOString(), VOCABS[meta.vocabulaire] ? meta.vocabulaire : 'noms');   // une promesse
 }
 
 async function startNoms() {
@@ -790,8 +817,8 @@ async function startNoms() {
     suivantNom();
     return;
   }
-  const au = await ouvrirSon(), appris = await voixApprise();
-  if (!appris) { await startEnreg(); return; }             // ni voix livrée ni série apprise : on commence par enregistrer
+  const au = await ouvrirSon(), appris = await voixApprise('noms');
+  if (!appris) { await startEnreg('noms'); return; }             // ni voix livrée ni série apprise : on commence par enregistrer
   const s = { ...base, input: 'voix', voix: appris.voix, seuil: appris.seuil, ecoute: new Ecoute(), rate: au.ctx.sampleRate, pcm: [], pcmN: 0 };
   s.ecoute.onEnonce = (u) => onNom(s, u);
   au.lag = DEBUG ? [] : null;
@@ -843,9 +870,10 @@ function choixHTML(liste) {
 function repondre(val) {
   const s = S;
   if (!s || s.over || s.pause || (s.kind !== 'reco' && !(s.kind === 'noms' && s.input === 'toucher'))) return;
-  if (s.kind === 'reco' && s.faux.has(String(val))) { ecouterReponse(val); return; }
+  if (s.kind === 'reco' && !s.mains && s.faux.has(String(val))) { ecouterReponse(val); return; }
   if (s.etat === 'ok') return;
   const juste = s.exo === 'rAccords' ? val === s.it.id : s.exo === 'rGammes' ? memesNotes(val, s.it.id) : +val === s.it.st;
+  if (s.mains) { repondreMains(s, val, juste); return; }
   if (s.premier === null) {
     s.premier = juste;
     s.v.push({ v: juste ? 'ok' : 'faux', rep: val, cls: +val - 1, st: s.it.st, quoi: s.it.quoi, ecoutes: s.ecoutes || 0, time: (performance.now() - s.t0) / 1000 });
@@ -861,11 +889,20 @@ function repondre(val) {
 
 // ---------- reconnaissance à l'oreille : intervalles, accords, gammes ----------
 // Le piano joue, on touche ce qu'on a entendu. Sans micro. L'icône du haut-parleur rejoue.
-async function startReco(exo) {
-  const au = await ouvrirSon(false), banc = await chargerPiano(au.ctx), at = new Date().toISOString();
-  S = { kind: 'reco', exo, input: 'toucher', r: JSON.parse(JSON.stringify(prefs[exo])), banc, it: null, etat: 'attend', premier: null, faux: new Set(), bon: null, ecoutes: 0, attend: false,
-    v: [], n: 0, over: false, pause: false, at, id: nouvelId(at), t0: performance.now() };
+async function startReco(exo, mains = false) {
+  const au = await ouvrirSon(mains), banc = await chargerPiano(au.ctx), at = new Date().toISOString();
+  const s = { kind: 'reco', exo, input: mains ? 'mains' : 'toucher', mains, r: JSON.parse(JSON.stringify(prefs[exo])), banc, it: null, etat: 'attend', premier: null, faux: new Set(), bon: null, ecoutes: 0, attend: false,
+    v: [], n: 0, level: 0, over: false, pause: false, at, id: nouvelId(at), t0: performance.now() };
   $('systems').className = 'chant';
+  if (mains) {
+    await preparerVoix(s, ['commandes', VOC_RECO[exo]]);
+    s.ecoute = new Ecoute(); s.ecoute.onEnonce = (u) => entendre(s, u);
+    au.sink = (y) => { if (s.over) return; s.ecoute.push(y); s.level = s.ecoute.niveau; };
+    S = s;
+    dire(`Écoute, ${{ rIntervalles: 'intervalles', rAccords: 'accords', rGammes: 'gammes' }[exo]}.`).then(() => { if (S === s && !s.over) suivantReco(); });
+    return;
+  }
+  S = s;
   suivantReco();
 }
 function suivantReco() {
@@ -882,8 +919,9 @@ function suivantReco() {
     it = { ...q, jeu: 'mel', quoi: [q.id, q.racine, q.sens] };
   }
   it.quoi.push(it.jeu);
-  s.it = it; s.etat = 'attend'; s.premier = null; s.faux = new Set(); s.bon = null; s.ecoutes = 0; s.attend = false;
+  s.it = it; s.etat = 'attend'; s.premier = null; s.faux = new Set(); s.bon = null; s.ecoutes = 0; s.attend = false; s.erreurs = 0;
   renderReco(); jouerReco();
+  if (s.mains) relancer(s);
 }
 // Le son a pu être fermé pendant que la page était cachée : il se rouvre au premier son demandé.
 async function sonPret() {
@@ -899,6 +937,9 @@ async function jouerNotes(notes, jeu) {
   const pas = gamme ? 0.38 : S.exo === 'rIntervalles' ? (S.r.ecart || 600) / 1000 : 0.6, dur = gamme ? 0.7 : Math.min(2.5, Math.max(1.1, pas + 0.5));
   couper(AU.ctx);
   notes.forEach((m, i) => jouer(AU.ctx, S.banc, m, mel ? dur : 1.8, mel ? 0.9 : 0.9 / Math.sqrt(n), mel ? i * pas : 0));
+  const total = (mel ? (n - 1) * pas + dur : 1.8) * 1000;
+  if (S.mains) bloquer(total);
+  return total;
 }
 const jouerReco = (jeu) => jouerNotes(S.it.notes, jeu || S.it.jeu);
 // Une réponse barrée, jouée sur la même fondamentale, dans le même sens et de la même façon que la question.
@@ -921,9 +962,9 @@ function renderReco() {
   $('systems').innerHTML = b('rejouer', ICONE.ecouter(48), 'Réécouter', 'grand') + choixHTML(liste) + `<div id="apres">${apres}</div>`;
 }
 
-async function startEnreg() {
+async function startEnreg(vocab = 'noms') {
   const au = await ouvrirSon(), at = new Date().toISOString();
-  const s = { kind: 'enreg', exo: 'noms', input: 'voix', phase: 'intro', pcm: [], pcmN: 0, journal: [], liste: [], i: -1, level: 0, rate: au.ctx.sampleRate,
+  const s = { kind: 'enreg', exo: vocab === 'noms' ? 'noms' : vocab, vocab, input: 'voix', phase: 'intro', pcm: [], pcmN: 0, journal: [], liste: [], i: -1, level: 0, rate: au.ctx.sampleRate,
     over: false, pause: false, at, id: nouvelId(at) };
   S = s;
   au.sink = (y) => {
@@ -941,7 +982,7 @@ function serie() {
   let liste;
   do {
     liste = [];
-    for (let k = 0; k < SERIE; k++) liste.push(...NOMS);
+    for (let k = 0; k < SERIE; k++) liste.push(...VOCABS[s.vocab].mots);
     for (let i = liste.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [liste[i], liste[j]] = [liste[j], liste[i]]; }
   } while (liste.some((q, i) => i && q === liste[i - 1]));
   Object.assign(s, { phase: 'dire', liste, i: -1, pcm: [], pcmN: 0, journal: [], bilan: null, fichier: null, at: new Date().toISOString() });
@@ -953,7 +994,7 @@ function serie() {
       // la série est apprise tout de suite ; le fichier reste partageable
       s.phase = 'fin'; s.fichier = diagFile();
       renderEnreg();
-      enroler(s.pcm.map((q) => Float32Array.from(q, (v) => v / 32768)), s.journal, +params.get('periode') || PROMPT_MS, s.at)
+      enroler(s.pcm.map((q) => Float32Array.from(q, (v) => v / 32768)), s.journal, +params.get('periode') || PROMPT_MS, s.at, s.vocab)
         .then((r) => { s.bilan = r; }, (e) => { s.bilan = { ok: false, msg: 'Apprentissage impossible : ' + e.message }; })
         .then(() => { if (S === s) renderEnreg(); });
       return;
@@ -965,21 +1006,211 @@ function serie() {
   s.pas = pas; s.prochain = 16 * 900;
 }
 function renderEnreg() {
-  const s = S, n = NOMS.length * SERIE, sec = Math.round(n * PROMPT_MS / 1000);
+  const s = S, V = VOCABS[s.vocab], n = V.mots.length * SERIE, sec = Math.round(n * PROMPT_MS / 1000);
   let h;
   if (s.phase === 'intro') {
-    h = `<p class="consigne">Pour reconnaître les noms d'intervalles, l'app apprend ta voix sur cet appareil. Une série : ${n} noms à lire à voix haute, un toutes les deux secondes et demie (${Math.floor(sec / 60)} min ${sec % 60} s).</p>`
+    h = `<p class="consigne">Pour reconnaître ${V.titre}, l'app apprend ta voix sur cet appareil. Une série : ${n} mots à lire à voix haute, un toutes les deux secondes et demie (${Math.floor(sec / 60)} min ${sec % 60} s).</p>`
       + '<button type="button" class="primary" data-e="go">Enregistrer une série</button><button type="button" class="lien" data-e="imp">Importer un enregistrement</button>';
   } else if (s.phase === 'dire') {
     h = `<p class="mot">${s.i < 0 ? '' : maj(s.liste[s.i])}</p><p class="compte">${Math.max(0, s.i + 1)} / ${n}</p>`;
   } else {
     const q = s.bilan || { msg: 'Apprentissage en cours…' };
-    h = q.ok ? `<p class="consigne">${q.n} noms appris. Vérification : ${q.juste} reconnus sur ${q.sur}.</p><button type="button" class="primary" data-e="exo">Commencer</button>`
-      : `<p class="consigne">${q.msg || `Série inexploitable : ${q.n} noms trouvés sur ${q.total}. Recommence au calme.`}</p>`;
+    h = q.ok ? `<p class="consigne">${q.n} mots appris. Vérification : ${q.juste} reconnus sur ${q.sur}.</p><button type="button" class="primary" data-e="exo">Commencer</button>`
+      : `<p class="consigne">${q.msg || `Série inexploitable : ${q.n} mots trouvés sur ${q.total}. Recommence au calme.`}</p>`;
     h += '<button type="button" class="lien" data-e="go">Une autre série</button>';
     if (s.fichier) h += '<button type="button" class="lien" data-e="part">Partager l\'enregistrement</button>';
   }
   $('systems').style.gap = ''; $('systems').innerHTML = h;
+}
+
+// ---------- mains libres ----------
+// Les exercices qui n'ont pas besoin de l'écran : reconnaissance (intervalles, accords, gammes) et chant (intervalles, accords,
+// gammes). L'app dit l'exercice (voix du téléphone), on répond à voix haute, un son dit juste ou faux. Commandes : « encore »
+// (réécouter), « suivant », « réponse », « stop » (changer d'exercice, puis finir). Le micro ignore ce que joue ou dit l'app.
+const VOC_RECO = { rIntervalles: 'noms', rAccords: 'accords', rGammes: 'gammes' };
+const ML_EXOS = [['Écoute', [['rIntervalles', 'Intervalles'], ['rAccords', 'Accords'], ['rGammes', 'Gammes']]], ['Chant', [['intervalles', 'Intervalles'], ['accords', 'Accords'], ['gammes', 'Gammes']]]];
+let bloques = [], parle = false;
+// Fenêtre où le micro est ignoré : piano, voix de l'app, sons (plus 0,3 s d'écho).
+function bloquer(ms) { const t = performance.now(); bloques = bloques.filter(([, b]) => b > t - 15000); bloques.push([t, t + ms + 300]); }
+const bloque = (a, b) => parle || bloques.some(([x, y]) => x < b && y > a);
+// iOS n'autorise la voix de l'app qu'après un premier énoncé lancé par un toucher : on en lance un, vide, au toucher.
+function debloquerVoix() { try { if (window.speechSynthesis) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } } catch (e) { /* voix absente */ } }
+function taire() { try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) { /* voix absente */ } parle = false; }
+function dire(texte) {
+  if (!window.speechSynthesis || !window.SpeechSynthesisUtterance || params.has('muet')) return Promise.resolve();
+  return new Promise((ok) => {
+    const t0 = performance.now(), u = new SpeechSynthesisUtterance(texte);
+    u.lang = 'fr-FR'; u.rate = 1.05;
+    const v = speechSynthesis.getVoices().find((q) => q.lang && q.lang.startsWith('fr'));
+    if (v) u.voice = v;
+    let fini = false;
+    const fin = () => { if (fini) return; fini = true; parle = false; bloques.push([t0, performance.now() + 300]); ok(); };
+    u.onend = fin; u.onerror = fin;
+    setTimeout(fin, 1500 + 90 * texte.length);              // la fin d'énoncé n'arrive pas toujours
+    parle = true; speechSynthesis.cancel(); speechSynthesis.speak(u);
+  });
+}
+// Sons : juste (deux notes qui montent), faux (deux notes graves qui descendent), note tenue (petit déclic).
+function bip(type) {
+  if (!AU || AU.ctx.state === 'closed') return;
+  const ctx = AU.ctx, t = ctx.currentTime + 0.01;
+  const notes = type === 'juste' ? [[1318.5, 0, 0.09], [1760, 0.09, 0.16]] : type === 'faux' ? [[311.1, 0, 0.14], [233.1, 0.14, 0.24]] : [[1975.5, 0, 0.05]];
+  for (const [f, d, l] of notes) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type === 'faux' ? 'triangle' : 'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime(0, t + d); g.gain.linearRampToValueAtTime(type === 'note' ? 0.06 : 0.16, t + d + 0.01); g.gain.exponentialRampToValueAtTime(0.0008, t + d + l);
+    o.connect(g); g.connect(ctx.destination); o.start(t + d); o.stop(t + d + l + 0.02);
+  }
+  bloquer(450);
+}
+async function preparerVoix(s, ids) { s.vocs = {}; for (const id of ids) { const v = await voixApprise(id); if (v) s.vocs[id] = v; } }
+// Un énoncé entendu : le nom le plus proche parmi ceux admis à cet instant (garder : vocabulaire → filtre), ou rien.
+let classerML = function (s, u, garder) {
+  const fin = performance.now() - 320, debut = fin - (u.t1 - u.t0) * 1000 - 150;
+  if (bloque(debut, fin)) return null;
+  const f = traits(u.c);
+  let best = null;
+  for (const id of Object.keys(garder)) {
+    const v = s.vocs && s.vocs[id];
+    if (!v) continue;
+    const r = v.voix.classer(f, -1, garder[id]);
+    if (r.cls !== -1 && r.dist <= v.seuil && r.autre >= 1.03 * r.dist && (!best || r.dist < best.dist)) best = { id, cls: r.cls, dist: r.dist };
+  }
+  if (DEBUG && best) $('debug').textContent = `v${VERSION} · entendu : ${best.id} ${best.cls} à ${best.dist.toFixed(2)}`;
+  return best;
+};
+const EN_EXO = ['encore', 'suivant', 'réponse', 'stop'];
+function entendre(s, u) {
+  if (s !== S || s.over || s.pause || s.muet) return;
+  if (s.kind === 'chant') {
+    if (u.t1 - u.t0 > 1.4) return;                         // une note chantée, pas une commande
+    const r = classerML(s, u, { commandes: (c) => EN_EXO.includes(c) });
+    if (r) commande(s, r.cls);
+    return;
+  }
+  if (s.kind === 'reco') {
+    if (u.t1 - u.t0 > 2.5) return;
+    const voc = VOC_RECO[s.exo], admis = s.exo === 'rIntervalles' ? (c) => s.r.iv.includes(c + 1) : (c) => s.r.types.includes(c);
+    const r = classerML(s, u, { commandes: (c) => EN_EXO.includes(c), [voc]: admis });
+    if (!r) return;
+    if (r.id === 'commandes') { commande(s, r.cls); return; }
+    clearTimeout(s.relance);
+    repondre(voc === 'noms' ? String(r.cls + 1) : r.cls);
+    return;
+  }
+  if (s.kind === 'menuML') entendreMenu(s, u);
+}
+// Sans réponse au bout de 8 s, l'exercice est rejoué une fois.
+function relancer(s) {
+  clearTimeout(s.relance);
+  s.relance = setTimeout(() => { if (S === s && !s.over && !s.pause && s.etat !== 'ok') { s.ecoutes += 1; jouerReco(); } }, 8000);
+}
+const reponseDite = (s) => (s.exo === 'rIntervalles' ? INTERVALLES[s.it.st].nom : s.exo === 'rAccords' ? ACCORDS.find((a) => a.id === s.it.id).parle : GAMMES.find((g) => g.id === s.it.id).nom);
+function texteChant(exo, it) {
+  if (exo === 'intervalles') return `${INTERVALLES[it.st].nom} ${sensDe(it.st, it.sens)}`;
+  if (exo === 'gammes') return `Gamme ${GAMMES.find((g) => g.id === it.id).nom}, ${it.sens > 0 ? 'en montant' : 'en descendant'}`;
+  return `${racineParlee(racineNom(it.racine, it.id))} ${ACCORDS.find((a) => a.id === it.id).parle}`;
+}
+// Réponse dite en reconnaissance. Juste : son, puis la suite. Faux : son, puis l'exercice rejoué ; au deuxième faux, l'app
+// dit la réponse. Trouvée après une erreur, joué ensemble : on l'entend encore note après note.
+function repondreMains(s, val, juste) {
+  if (s.premier === null) {
+    s.premier = juste;
+    s.v.push({ v: juste ? 'ok' : 'faux', rep: val, cls: +val - 1, st: s.it.st, quoi: s.it.quoi, ecoutes: s.ecoutes || 0, time: (performance.now() - s.t0) / 1000 });
+  }
+  if (!juste) {
+    s.faux.add(String(val)); s.etat = 'faux'; s.erreurs = (s.erreurs || 0) + 1; render(); ligne(); bip('faux');
+    if (s.erreurs >= 2) { setTimeout(() => { if (S === s && !s.over) donnerReponse(s); }, 400); return; }
+    setTimeout(() => { if (S === s && !s.over && s.etat !== 'ok') { jouerReco(); relancer(s); } }, 450);
+    return;
+  }
+  s.etat = 'ok'; s.bon = String(val); s.n += 1; render(); ligne(); bip('juste');
+  if (s.v.length % 16 === 0) sauver(s);
+  if (s.premier || s.it.jeu !== 'harm') { s.nextT = setTimeout(() => { if (S === s && !s.over) suivantReco(); }, s.premier ? 600 : 1000); return; }
+  setTimeout(() => {
+    if (S !== s || s.over) return;
+    jouerReco('mel').then((ms) => { s.nextT = setTimeout(() => { if (S === s && !s.over) suivantReco(); }, (ms || 1500) + 500); });
+  }, 450);
+}
+async function donnerReponse(s) {
+  clearTimeout(s.relance);
+  if (s.premier === null) { s.premier = false; s.v.push({ v: 'faux', rep: 'réponse', st: s.it.st, quoi: s.it.quoi, ecoutes: s.ecoutes || 0, time: (performance.now() - s.t0) / 1000 }); }
+  s.etat = 'ok'; s.bon = s.exo === 'rIntervalles' ? String(s.it.st) : s.it.id; render(); ligne();
+  await dire(reponseDite(s));
+  if (S !== s || s.over) return;
+  const ms = await jouerReco(s.it.jeu === 'harm' ? 'mel' : undefined);
+  s.nextT = setTimeout(() => { if (S === s && !s.over) suivantReco(); }, (ms || 1500) + 700);
+}
+function commande(s, c) {
+  if (c === 'stop') { finExercice(s); return; }
+  if (s.kind === 'reco') {
+    if (c === 'encore') { s.ecoutes += 1; jouerReco(); relancer(s); }
+    else if (c === 'réponse') donnerReponse(s);
+    else if (c === 'suivant') {
+      if (s.premier === null) s.v.push({ v: 'faux', rep: 'suivant', st: s.it.st, quoi: s.it.quoi, ecoutes: s.ecoutes || 0, time: (performance.now() - s.t0) / 1000 });
+      suivantReco();
+    }
+  } else if (s.kind === 'chant') {
+    if (c === 'encore') { s.replays += 1; s.j = 0; s.cents = []; s.fauxJ = -1; playRef(); }
+    else if (c === 'réponse') aide('arpege');
+    else if (c === 'suivant') suivant();
+  }
+}
+// « stop » dans un exercice : on revient au choix de l'exercice à la voix. Au choix, « stop » finit le mode.
+function finExercice(s) { taire(); lancer(s.vocs && s.vocs.commandes ? 'menuML' : 'ml'); }
+
+async function startMainsLibres() {
+  fermerSon();
+  const pret = {};
+  for (const id of ['noms', 'commandes', 'accords', 'gammes']) pret[id] = !!(await voixApprise(id));
+  S = { kind: 'ml', exo: 'ml', input: 'toucher', pret, over: false, pause: false };
+  $('systems').className = 'dire';
+}
+function renderML() {
+  const p = S.pret, ok = (exo) => (VOC_RECO[exo] ? p[VOC_RECO[exo]] : true);
+  let h = `<div class="ml">${ICONE.ecouteurs(56)}`;
+  for (const [titre, liste] of ML_EXOS) {
+    h += `<p class="rubrique">${titre}</p><div class="exos">${liste.map(([exo, t]) => `<button type="button" data-ml="${exo}"${ok(exo) ? '' : ` class="manque" aria-label="${t} : voix à enregistrer"`}>${t}</button>`).join('')}</div>`;
+  }
+  h += `<p class="rubrique">Ma voix</p><div class="exos">${[['commandes', 'Commandes'], ['accords', 'Accords'], ['gammes', 'Gammes']].map(([v, t]) => `<button type="button" data-voc="${v}" class="${p[v] ? 'fait' : 'manque'}">${t}</button>`).join('')}</div></div>`;
+  h += `<p class="consigne">${p.commandes ? 'Touche un exercice, puis tout passe par la voix. « Stop » pour changer d\'exercice.' : 'Touche un exercice, puis tout passe par la voix. Pour les commandes (« encore », « suivant », « réponse », « stop »), enregistre d\'abord ta voix.'}</p>`;
+  $('systems').style.gap = '18px'; $('systems').innerHTML = h;
+}
+// Choix de l'exercice à la voix : « écoute » ou « chant », puis « intervalles », « accords » ou « gammes ».
+async function startMenuML() {
+  const au = await ouvrirSon(true);
+  const s = { kind: 'menuML', exo: 'menuML', input: 'voix', mains: true, niveau: 1, famille: null, level: 0, over: false, pause: false, ecoute: new Ecoute() };
+  await preparerVoix(s, ['commandes', 'accords', 'gammes']);
+  s.ecoute.onEnonce = (u) => entendre(s, u);
+  au.sink = (y) => { if (s.over) return; s.ecoute.push(y); s.level = s.ecoute.niveau; };
+  S = s;
+  $('systems').className = 'dire';
+  questionMenu(s);
+}
+function questionMenu(s) {
+  render();
+  dire(s.niveau === 1 ? 'Écoute ou chant ?' : 'Intervalles, accords ou gammes ?');
+  clearTimeout(s.relance);
+  s.relance = setTimeout(() => { if (S === s && !s.over) questionMenu(s); }, 15000);
+}
+function entendreMenu(s, u) {
+  if (u.t1 - u.t0 > 2) return;
+  const admis = s.niveau === 1 ? ['écoute', 'chant', 'stop'] : ['intervalles', 'accords', 'gammes', 'stop'];
+  const r = classerML(s, u, { commandes: (c) => admis.includes(c) });
+  if (!r) return;
+  if (r.cls === 'stop') { clearTimeout(s.relance); dire('Fin du mode mains libres.').then(() => { if (S === s) lancer('ml'); }); return; }
+  if (s.niveau === 1) { s.famille = r.cls; s.niveau = 2; questionMenu(s); return; }
+  const exo = s.famille === 'écoute' ? { intervalles: 'rIntervalles', accords: 'rAccords', gammes: 'rGammes' }[r.cls] : r.cls;
+  if (VOC_RECO[exo] && !s.vocs[VOC_RECO[exo]]) { dire(`Il faut d'abord enregistrer ta voix pour les ${r.cls}.`); return; }
+  clearTimeout(s.relance);
+  lancer(exo, { mains: true });
+}
+// Tests : un mot reconnu, sans passer par le micro.
+function entendreMenuTest(s, cls) { const garde = classerML; classerML = () => ({ id: 'commandes', cls, dist: 0 }); try { entendreMenu(s, { t0: 0, t1: 0.5, c: [] }); } finally { classerML = garde; } }
+function renderMenuML() {
+  const q = S.niveau === 1 ? 'Écoute ou chant ?' : 'Intervalles, accords ou gammes ?';
+  $('systems').style.gap = '18px';
+  $('systems').innerHTML = `<div class="ml">${ICONE.ecouteurs(56)}</div><p class="mot">${q}</p><p class="consigne">« Stop » pour finir.</p>`;
 }
 
 // ---------- réglages ----------
@@ -1069,7 +1300,7 @@ async function fermerReglages() {
 function reglage(b) {
   const a = b.dataset.a, k = b.dataset.k, v = b.dataset.v;
   if (a === 'part') { shareAudio(); return; }
-  if (a === 'serie') { $('sheet').hidden = true; savePrefs(); lancer('enreg'); return; }
+  if (a === 'serie') { $('sheet').hidden = true; savePrefs(); lancer('enreg', { vocab: 'noms' }); return; }
   if (a === 'set') {
     const [e, c] = k.split('.'); prefs[e][c] = v;
     if (k === 'notes.input' && v === 'midi') midi.open().catch(() => { midi.refus = true; }).then(() => { if (!$('sheet').hidden) $('reglages').innerHTML = reglagesHTML(); });
@@ -1121,6 +1352,8 @@ modelP = fetch('model.json').then((r) => { if (!r.ok) throw new Error('modèle v
 modelP.catch((e) => say('Chargement impossible : ' + e.message));
 if (navigator.requestMIDIAccess) { if (prefs.notes.input === 'midi') midi.open().catch(() => {}); } else prefs.notes.input = 'voix';
 $('liste').addEventListener('click', (e) => { const b = e.target.closest('button[data-exo]'); if (b) lancer(b.dataset.exo); });
+$('mainslibres').innerHTML = ICONE.ecouteurs(36);
+$('mainslibres').addEventListener('click', () => lancer('ml'));
 // cinq touches rapides sur le titre : active ou coupe le mode diagnostic (son partageable, syllabes entendues)
 let taps = [];
 document.querySelector('h1').addEventListener('click', () => {
@@ -1141,6 +1374,12 @@ $('systems').addEventListener('click', (e) => {
   if (!S || S.over || S.pause) return;
   // chant : toucher l'exercice rejoue la note de départ, et l'on reprend à la première note
   if (S.kind === 'chant' && S.phase === 'vise') { S.replays += 1; S.j = 0; S.cents = []; S.fauxJ = -1; playRef(); return; }
+  if (S.kind === 'ml') {
+    const m = e.target.closest('button[data-ml]'), v = e.target.closest('button[data-voc]');
+    if (m) { const voc = VOC_RECO[m.dataset.ml]; if (voc && !S.pret[voc]) { lancer('enreg', { vocab: voc }); return; } debloquerVoix(); lancer(m.dataset.ml, { mains: true }); }
+    else if (v) lancer('enreg', { vocab: v.dataset.voc });
+    return;
+  }
   const c = e.target.closest('button[data-r]');
   if (c) { repondre(c.dataset.r); return; }
   const b = e.target.closest('button[data-e]');
@@ -1151,7 +1390,7 @@ $('systems').addEventListener('click', (e) => {
     return;
   }
   if (b && S.kind === 'enreg') {
-    if (b.dataset.e === 'go') serie(); else if (b.dataset.e === 'imp') $('import').click(); else if (b.dataset.e === 'exo') lancer('noms'); else shareAudio();
+    if (b.dataset.e === 'go') serie(); else if (b.dataset.e === 'imp') $('import').click(); else if (b.dataset.e === 'exo') lancer(S.vocab === 'noms' ? 'noms' : 'ml'); else shareAudio();
   }
 });
 $('page').addEventListener('click', () => {
@@ -1176,4 +1415,6 @@ document.addEventListener('visibilitychange', () => {
   quitter();
 });
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
-window.__solfege = { VERSION, prefs, get session() { return S; }, get son() { return AU; }, verdicts, onMidiNote, diagFile, get gateOff() { return gateOff; } };
+// ?mains-libres (deuxième icône, raccourci) : on arrive sur l'écran Mains libres
+if (params.has('mains-libres')) lancer('ml');
+window.__solfege = { VERSION, prefs, get session() { return S; }, entendu: (id, cls) => { const s = S; if (!s) return; if (id === 'commandes') { if (s.kind === 'menuML') entendreMenuTest(s, cls); else commande(s, cls); } else if (s.kind === 'reco') repondre(id === 'noms' ? String(cls + 1) : cls); }, get son() { return AU; }, verdicts, onMidiNote, diagFile, get gateOff() { return gateOff; } };

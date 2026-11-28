@@ -13,10 +13,31 @@ Adresse : https://hugolangepro.github.io/solfege/
   réglages de cet exercice ; à la fermeture il reprend, ou repart avec les nouveaux réglages. On change d'exercice depuis l'accueil.
 - Cinq touches rapides sur le titre activent le mode diagnostic : syllabes entendues à l'écran, et partage du son de la séance depuis les réglages.
 
+## Mains libres
+
+Pour s'exercer sans regarder l'écran (en voiture, écouteurs) : écoute d'intervalles, d'accords et de gammes, chant d'intervalles,
+d'accords et de gammes. Entrées : l'icône d'écouteurs de l'accueil ; l'adresse `?mains-libres` ; la page `mains-libres/`, à
+ajouter à l'écran d'accueil pour une deuxième icône (sur iPhone, chaque icône a ses propres données : réglages et séries
+enregistrées ne sont pas partagés). Un toucher sur l'exercice est nécessaire au départ : iOS n'autorise le son et la voix
+qu'après un geste.
+
+- L'app dit l'exercice avec la voix du téléphone ; on répond à voix haute ; un son dit juste (deux notes qui montent) ou faux
+  (deux notes graves). En écoute, au deuxième faux l'app dit la réponse ; sans réponse au bout de 8 s, l'exercice est rejoué.
+  En chant, un déclic à chaque note tenue, le son juste à la fin ; une reprise est annoncée par le son faux.
+- Commandes : « encore », « suivant », « réponse », « stop ». « Stop » ramène au choix de l'exercice à la voix
+  (« écoute » ou « chant », puis « intervalles », « accords » ou « gammes ») ; « stop » au choix finit le mode.
+- Le micro ignore ce que l'app joue ou dit (fenêtres de silence, plus 0,3 s d'écho).
+- Vocabulaires à enregistrer sur l'écran Mains libres, rubrique « Ma voix » : commandes (9 mots), noms d'accords (12, tels que
+  dits : majeur, mineur, augmenté, triade diminuée, sus 4, mineur 7, maj 7, 7, mineur maj 7, 6, semi-diminué, diminué), noms de
+  gammes (12). Les noms d'intervalles sont déjà livrés (`noms.json`). Les séries partagées par l'app pourront être livrées de la
+  même façon (`livre` dans `VOCABS`).
+- Non vérifié sur iPhone : la voix de l'app quand le micro est ouvert, le son par Bluetooth (le micro des écouteurs ou de la
+  voiture peut faire passer le son en qualité téléphone), la reconnaissance dans le bruit d'une voiture.
+
 ## Règles d'affichage (pour toute modification future)
 
 - Intervalles et accords toujours en notation standard abrégée, jamais en toutes lettres : 2m 2M 3m 3M 4 TT 5 6m 6M 7m 7M ;
-  accords en chiffrage jazz (C, C–, C+, C°, Csus4, C–7, C∆7, C7, C–∆7, C6, Cø7, C°7). Seule exception : l'écran d'enregistrement des noms,
+  accords en chiffrage jazz (C, C–, C+, C°, Csus4, C–7, C∆7, C7, C–∆7, C6, Cø7, C°7). La voix de l'app, elle, dit les noms. Seule exception : l'écran d'enregistrement des noms,
   qui affiche le mot à prononcer. Gammes : maj, min, min harm, penta maj, penta min ; modes par leur nom.
 - Pas de texte quand une icône suffit (réglages, micro, écoute, notes ensemble, notes l'une après l'autre, suite).
 - Le moins d'éléments possible à l'écran ; une note fausse est rouge, sans autre marque.
@@ -57,6 +78,7 @@ L'app revalide ses fichiers à chaque ouverture : la nouvelle version arrive au 
 - `pitch.js` : hauteur de la voix en flux (méthode de McLeod après un passe-bas à 1 kHz), une mesure toutes les 10 ms.
 - `chant.js` : chant. Tirage des intervalles, des notes sur la portée et des accords ; chiffrages ; jugement de la tenue.
 - `portee.js` : dessin des portées, des notes, des altérations.
+- `mains-libres/` : page d'entrée pour une deuxième icône d'écran d'accueil.
 - `noms.js`, `noms.json` : noms d'intervalles dits à voix haute ; la voix de départ, et l'apprentissage sur l'appareil.
 - `piano.js`, `piano/` : quatorze notes de piano enregistrées (voir NOTICE), transposées d'un demi-ton et demi au plus.
 - `worklet-2.js` : relais du micro (`worklet.js` reste servi pour une page ouverte avant la mise à jour).

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#F5F1E6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Mains libres">
+<title>Mains libres</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="../icons/mains-180.png">
+<style>
+body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 24px;
+  background: #F5F1E6; color: #1C1A17; font: 18px/1.45 "Iowan Old Style", "Palatino", Georgia, serif; text-align: center; box-sizing: border-box; }
+p { margin: 0; max-width: 24em; font-style: italic; color: #6B6457; }
+a { color: #1C1A17; }
+</style>
+<script>
+  // Lancée depuis l'écran d'accueil : on ouvre directement l'écran Mains libres de l'app.
+  if (navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches)) location.replace('../?mains-libres');
+</script>
+</head>
+<body>
+<img src="../icons/mains-192.png" width="96" height="96" alt="">
+<p>Pour une deuxième icône qui ouvre directement Mains libres : Partager, puis « Sur l'écran d'accueil ».</p>
+<a href="../?mains-libres">Ouvrir Mains libres</a>
+</body>
+</html>

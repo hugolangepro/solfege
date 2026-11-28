@@ -51,6 +51,11 @@ h1 { margin: 0; font-size: 44px; line-height: 1; font-weight: 400; font-style: i
 #choix button.bon { color: #2E7A3C; }
 .icone { width: 44px; height: 44px; display: inline-grid; place-items: center; color: var(--soft); }
 .icone.grand { width: 96px; height: 96px; color: var(--ink); }
+#mainslibres { width: 56px; height: 56px; }
+.ml { display: flex; flex-direction: column; align-items: center; }
+.ml button { min-height: 48px; padding: 0 9px; font-size: 21px; }
+.ml .manque { color: var(--soft); }
+.ml .fait::after { content: ' ✓'; font-size: 15px; color: var(--soft); }
 #apres { display: flex; gap: 22px; justify-content: center; margin-top: 10px; min-height: 44px; }
 .choice { display: flex; gap: 6px 22px; flex-wrap: wrap; justify-content: center; }
 .choice button { min-height: 44px; padding: 0 2px; color: var(--soft); border-bottom: 2px solid transparent; }
@@ -109,6 +114,7 @@ h1 { margin: 0; font-size: 44px; line-height: 1; font-weight: 400; font-style: i
     <p class="rubrique">Reconnaissance</p>
     <div class="exos"><button type="button" data-exo="rIntervalles">Intervalles</button><button type="button" data-exo="rAccords">Accords</button><button type="button" data-exo="rGammes">Gammes</button></div>
   </nav>
+  <button type="button" id="mainslibres" class="icone" aria-label="Mains libres"></button>
   <p id="msg" role="status"></p>
 </main>
 <main id="page" hidden>

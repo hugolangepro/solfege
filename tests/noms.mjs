@@ -33,4 +33,13 @@ const ec = new Ecoute(); let n = 0; ec.onEnonce = () => { n++; }; ec.push(bruit(
 check('cinq secondes de fond sonore : aucun énoncé', n, 0);
 const c = ex[0].c, d = deballer(emballer(c));
 check('stockage sur un octet : même nombre de trames', d.length, c.length);
+// classes nommées (accords, commandes) : même apprentissage, et filtre des noms admis
+{
+  const j2 = journal.map(([ms, m]) => [ms, ['encore', 'suivant', 'réponse', 'stop'][m]]);
+  const ex2 = apprendre(pcm, j2, 2500), E2 = ex2.map((e) => ({ cls: e.cls, f: traits(e.c) })), V2 = new Voix(E2);
+  check('classes nommées : énoncés appris', ex2.length, 16);
+  check('classes nommées : vérification', `${V2.verifier().ok}/16`, '16/16');
+  const r = V2.classer(E2[0].f, 0, (c) => c !== E2[0].cls);
+  check('filtre : le nom écarté n\'est jamais rendu', r.cls !== E2[0].cls, true);
+}
 process.exit(ok ? 0 : 1);

@@ -122,10 +122,11 @@ export function dtw(a, b, plafond = Infinity) {
 // deuxième nom. `sauf` écarte un exemple (vérification de chaque exemple contre tous les autres).
 export class Voix {
   constructor(exemples) { this.ex = exemples; }
-  classer(f, sauf = -1) {
+  // garder(cls) : ne comparer qu'aux noms admis à cet instant (les autres exemples ne sont même pas calculés).
+  classer(f, sauf = -1, garder = null) {
     const par = new Map();
     this.ex.forEach((e, i) => {
-      if (i === sauf) return;
+      if (i === sauf || (garder && !garder(e.cls))) return;
       const d = dtw(f, e.f), a = par.get(e.cls) || [Infinity, Infinity];
       if (d < a[0]) { a[1] = a[0]; a[0] = d; } else if (d < a[1]) a[1] = d;
       par.set(e.cls, a);
@@ -159,7 +160,7 @@ export function apprendre(blocs, journal, periodeMs) {
   journal.forEach(([ms, cls], k) => {
     const a = ms / 1000, b = k + 1 < journal.length ? journal[k + 1][0] / 1000 : a + periodeMs / 1000;
     const u = enonces.find((q) => q.t0 >= a && q.t0 < b);
-    if (u && cls >= 0) out.push({ cls, c: u.c });
+    if (u && cls !== -1 && cls !== null && cls !== undefined) out.push({ cls, c: u.c });   // classes numériques ou nommées
   });
   return out;
 }
