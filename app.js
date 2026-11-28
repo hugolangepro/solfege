@@ -6,7 +6,7 @@ import { chargerPiano, jouer, couper } from './piano.js';
 import { Ecoute, Voix, traits, apprendre, emballer, deballer } from './noms.js';
 import { PER, P_MIN, P_MAX, CLEFS, INK, DONE, RED, GREEN, BLUE, SOFT, LINE, r2, noteInfo, metrics, systemSVG, miniPortee, porteeChant } from './portee.js';
 
-const VERSION = '2026-11-26.3';
+const VERSION = '2026-11-28.1';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 let DEBUG = params.has('debug');
@@ -30,7 +30,7 @@ const DIAG_MAX = 16000 * 300;                          // son gardé : cinq minu
 // ---------- préférences ----------
 const TOUS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 const prefs = {
-  exo: 'notes', tenue: 700, courbe: true,
+  exo: 'notes', tenue: 700, courbe: true, accordsVus: ACCORDS.map((a) => a.id),
   notes: { clef: 'sol', input: 'voix', sol: [-2, 10], fa: [-2, 10] },
   intervalles: { iv: TOUS.slice(), montant: true, descendant: true, depart: true },
   portee: { iv: TOUS.slice(), montant: true, descendant: true },
@@ -47,6 +47,9 @@ try {
   for (const k of ['notes', 'intervalles', 'portee', 'accords', 'noms', 'gammes', 'rIntervalles', 'rAccords', 'rGammes']) if (lu[k] && typeof lu[k] === 'object') Object.assign(prefs[k], lu[k]);
   if (typeof lu.tenue === 'number') prefs.tenue = lu.tenue;
   if (typeof lu.courbe === 'boolean') prefs.courbe = lu.courbe;
+  // un accord ajouté à la liste depuis la dernière visite est coché une fois dans les exercices d'accords ; ensuite, le choix est libre
+  const vus = Array.isArray(lu.accordsVus) ? lu.accordsVus : ['maj', 'min', 'aug', 'dim', 'sus4', 'm7', 'maj7', '7', 'mMaj7', '6'];
+  for (const a of ACCORDS) if (!vus.includes(a.id)) for (const k of ['accords', 'rAccords']) if (!prefs[k].types.includes(a.id)) prefs[k].types.push(a.id);
   delete prefs.accords.notation;
   if (['notes', 'noms', 'intervalles', 'portee', 'accords', 'gammes', 'rIntervalles', 'rAccords', 'rGammes'].includes(lu.exo)) prefs.exo = lu.exo;
 } catch (e) { /* préférences absentes */ }

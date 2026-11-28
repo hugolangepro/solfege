@@ -16,7 +16,7 @@ Adresse : https://hugolangepro.github.io/solfege/
 ## Règles d'affichage (pour toute modification future)
 
 - Intervalles et accords toujours en notation standard abrégée, jamais en toutes lettres : 2m 2M 3m 3M 4 TT 5 6m 6M 7m 7M ;
-  accords en chiffrage jazz (C, C–, C+, C°, Csus4, C–7, C∆7, C7, C–∆7, C6). Seule exception : l'écran d'enregistrement des noms,
+  accords en chiffrage jazz (C, C–, C+, C°, Csus4, C–7, C∆7, C7, C–∆7, C6, Cø7, C°7). Seule exception : l'écran d'enregistrement des noms,
   qui affiche le mot à prononcer. Gammes : maj, min, min harm, penta maj, penta min ; modes par leur nom.
 - Pas de texte quand une icône suffit (réglages, micro, écoute, notes ensemble, notes l'une après l'autre, suite).
 - Le moins d'éléments possible à l'écran ; une note fausse est rouge, sans autre marque.

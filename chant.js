@@ -23,13 +23,16 @@ export const ACCORDS = [
   { id: 'maj', tons: [0, 4, 7], signe: '', nom: 'majeur' },
   { id: 'min', tons: [0, 3, 7], signe: '–', nom: 'mineur', mineur: true },
   { id: 'aug', tons: [0, 4, 8], signe: '+', nom: 'augmenté' },
-  { id: 'dim', tons: [0, 3, 6], signe: '°', nom: 'diminué', mineur: true },
+  { id: 'dim', tons: [0, 3, 6], signe: '°', nom: 'diminué (triade)', mineur: true },
   { id: 'sus4', tons: [0, 5, 7], signe: 'sus4' },
   { id: 'm7', tons: [0, 3, 7, 10], signe: '–7', mineur: true },
   { id: 'maj7', tons: [0, 4, 7, 11], signe: '∆7' },
   { id: '7', tons: [0, 4, 7, 10], signe: '7' },
   { id: 'mMaj7', tons: [0, 3, 7, 11], signe: '–∆7', mineur: true },
-  { id: '6', tons: [0, 4, 7, 9], signe: '6' }];
+  { id: '6', tons: [0, 4, 7, 9], signe: '6' },
+  // semi-diminué = mineur 7 bémol 5 ; diminué = septième diminuée, la ♭♭7 sonnant comme une 6 (d'où « mineur 6 bémol 5 »)
+  { id: 'm7b5', tons: [0, 3, 6, 10], signe: 'ø7', nom: 'semi-diminué', mineur: true },
+  { id: 'dim7', tons: [0, 3, 6, 9], signe: '°7', nom: 'diminué', mineur: true }];
 const RACINES = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'G♭', 'G', 'A♭', 'A', 'B♭', 'B'];
 const RACINES_MIN = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
 export const racineNom = (racine, id) => (ACCORDS.find((q) => q.id === id).mineur || id === '7' && racine === 6 ? RACINES_MIN : RACINES)[racine];

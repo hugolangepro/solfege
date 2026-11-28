@@ -22,7 +22,8 @@ let s = 7; const rnd = () => { s = (s * 16807) % 2147483647; return s / 21474836
   check('les 22 intervalles orientés sortent sur la portée', vus.size, 22);
   console.log('    seconde note sur la portée : ' + JSON.stringify(alt) + ' (bémol, naturelle, dièse)');
   check('un seul intervalle choisi, descendant', [1, 2, 3].map(() => { const q = tirerIntervalle({ iv: [6], montant: false, descendant: true }, rnd); return q.st * q.sens; }).join(), '-6,-6,-6');
-  check('chiffrages en do', ACCORDS.map((a) => chiffrage(0, a.id)).join(' '), 'C C– C+ C° Csus4 C–7 C∆7 C7 C–∆7 C6');
+  check('chiffrages en do', ACCORDS.map((a) => chiffrage(0, a.id)).join(' '), 'C C– C+ C° Csus4 C–7 C∆7 C7 C–∆7 C6 Cø7 C°7');
+  check('ø7 et °7 : notes sur do', ['m7b5', 'dim7'].map((id) => ACCORDS.find((a) => a.id === id).tons.join('-')).join(' | '), '0-3-6-10 | 0-3-6-9');
   check('fondamentales altérées', [1, 6, 8, 10].map((q) => ['maj7', 'm7', '7'].map((id) => chiffrage(q, id)).join(' ')).join(' | '), 'D♭∆7 C♯–7 D♭7 | G♭∆7 F♯–7 F♯7 | A♭∆7 A♭–7 A♭7 | B♭∆7 B♭–7 B♭7');
   { let bon = true; for (let i = 0; i < 2000; i++) { const g = tirerGamme({ types: GAMMES.map((q) => q.id), montant: true, descendant: true }, rnd), n = GAMMES.find((q) => q.id === g.id).tons.length + 1;
       bon = bon && g.notes.length === n && g.notes[g.sens > 0 ? 0 : n - 1] === g.ref && Math.abs(g.notes[n - 1] - g.notes[0]) === 12 && g.ref >= 48 && g.ref < 60; }

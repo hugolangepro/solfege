@@ -101,4 +101,4 @@ async def main():
             e2 = await pg.evaluate("() => { const s = window.__solfege.session; return [s.n, s.results.map(r => [r.quoi, r.cents, r.reprises])]; }")
             print('Chant de gamme :', e1[:3], '| à 5,3 s : note', e1[3], '| aides', e1[4], '| à 11,6 s : trouvées', e2[0], e2[1], '| ligne du bas', repr(await pg.inner_text('#result')), '| erreurs :', errs)
             await b.close()
-asyncio.run(main())
+if __name__ == "__main__": asyncio.run(main())
